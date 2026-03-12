@@ -2,6 +2,14 @@
 
 ## Install
 
+### Homebrew
+
+```sh
+brew install block/tap/lhm
+```
+
+### Shell script
+
 ```sh
 curl -fsSL https://raw.githubusercontent.com/block/lefthookmerge/main/install.sh | sh
 ```

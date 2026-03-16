@@ -6,6 +6,9 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
 
+/// System-wide config directory.
+pub const SYSTEM_CONFIG_DIR: &str = "/usr/local/etc";
+
 /// Overrides for the global and local (repo) config paths.
 /// CLI flags take precedence; env vars (`LHM_GLOBAL_CONFIG`, `LHM_LOCAL_CONFIG`)
 /// are used as fallback so that overrides work during hook invocations too.
@@ -81,12 +84,18 @@ pub fn find_config(dir: &Path, check_dot_config: bool) -> Option<PathBuf> {
     None
 }
 
+/// Find the user-level lefthook config in the given directory (e.g. `~/.local/etc`).
 pub fn global_config(home: &Path, overrides: &ConfigOverrides) -> Option<PathBuf> {
     if let Some(ref p) = overrides.global_config {
         debug!("using global config override: {}", p.display());
         return Some(p.clone());
     }
     find_config(home, false)
+}
+
+/// Find the system-wide lefthook config in `/usr/local/etc`.
+pub fn system_config() -> Option<PathBuf> {
+    find_config(Path::new(SYSTEM_CONFIG_DIR), false)
 }
 
 pub fn repo_config(root: &Path, overrides: &ConfigOverrides) -> Option<PathBuf> {
@@ -97,24 +106,41 @@ pub fn repo_config(root: &Path, overrides: &ConfigOverrides) -> Option<PathBuf> 
     find_config(root, true)
 }
 
-/// Write the default global config to `~/.lefthook.yaml` if no global config exists.
-pub fn install_default_global_config(home: &Path) -> Result<(), String> {
-    if find_config(home, false).is_some() {
+/// Write a default `lefthook.yaml` in `dir` if no lefthook config exists there.
+pub fn install_default_global_config(dir: &Path) -> Result<(), String> {
+    if find_config(dir, false).is_some() {
         debug!("global config already exists, skipping default");
         return Ok(());
     }
-    let path = home.join(".lefthook.yaml");
+    let path = dir.join("lefthook.yaml");
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("failed to create {}: {e}", parent.display()))?;
+    }
     fs::write(&path, DEFAULT_GLOBAL_CONFIG).map_err(|e| format!("failed to write {}: {e}", path.display()))?;
     info!("created default global config at {}", path.display());
     Ok(())
 }
 
-/// Load the global config from `~/.lefthook.yaml` (or override) if it exists.
-pub fn load_global_config(home: &Path, overrides: &ConfigOverrides) -> Result<Option<Value>, String> {
-    match global_config(home, overrides) {
+/// Load the user-level config from `~/.local/etc/lefthook.yaml` (or override) if it exists.
+pub fn load_global_config(dir: &Path, overrides: &ConfigOverrides) -> Result<Option<Value>, String> {
+    match global_config(dir, overrides) {
         Some(path) => read_yaml(&path).map(Some),
         None => {
-            debug!("no global config file found");
+            debug!("no user config file found");
+            Ok(None)
+        }
+    }
+}
+
+/// Load the system-wide config from `/usr/local/etc/lefthook.yaml` if it exists.
+pub fn load_system_config() -> Result<Option<Value>, String> {
+    match system_config() {
+        Some(path) => {
+            debug!("system config: {}", path.display());
+            read_yaml(&path).map(Some)
+        }
+        None => {
+            debug!("no system config file found");
             Ok(None)
         }
     }
@@ -212,7 +238,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         install_default_global_config(dir.path()).unwrap();
 
-        let created = dir.path().join(".lefthook.yaml");
+        let created = dir.path().join("lefthook.yaml");
         assert!(created.is_file());
         let content = fs::read_to_string(&created).unwrap();
         assert!(content.contains("pre-push:"));
@@ -229,8 +255,8 @@ mod tests {
 
         // Original file untouched
         assert_eq!(fs::read_to_string(&existing).unwrap(), "custom: true\n");
-        // No .lefthook.yaml created
-        assert!(!dir.path().join(".lefthook.yaml").exists());
+        // No lefthook.yaml created
+        assert!(!dir.path().join("lefthook.yaml").exists());
     }
 
     #[test]

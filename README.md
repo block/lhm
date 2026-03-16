@@ -27,13 +27,25 @@ for repo configs), where `<ext>` is `yml`, `yaml`, `json`, `jsonc`, or `toml`.
 
 ### `lhm install`
 
-- Creates symlinks for all standard git hooks in `~/.lhm/hooks/`, each pointing to the `lhm` binary
-- Sets `git config --global core.hooksPath ~/.lhm/hooks`
-- Writes a default `~/.lefthook.yaml` if no global config exists
+- Creates symlinks for all standard git hooks in `~/.local/libexec/lhm/hooks/`, each pointing to the `lhm` binary
+- Sets `git config --global core.hooksPath ~/.local/libexec/lhm/hooks`
+- Writes a default `~/.local/etc/lefthook.yaml` if no user config exists
+
+### `lhm install --system`
+
+Same as `lhm install` but targets a system-wide location (requires root):
+
+- Creates symlinks in `/usr/local/libexec/lhm/hooks/`
+- Sets `git config --system core.hooksPath /usr/local/libexec/lhm/hooks`
+- Writes a default `/usr/local/etc/lefthook.yaml` if no system config exists
 
 ### `lhm disable`
 
-Unsets `git config --global core.hooksPath`, disabling lhm. The hook symlinks in `~/.lhm/hooks/` are left in place so `lhm install` can re-enable quickly.
+Unsets `git config --global core.hooksPath`, disabling lhm. The hook symlinks in `~/.local/libexec/lhm/hooks/` are left in place so `lhm install` can re-enable quickly.
+
+### `lhm disable --system`
+
+Unsets `git config --system core.hooksPath` (requires root). The hook symlinks in `/usr/local/libexec/lhm/hooks/` are left in place.
 
 ### `lhm dry-run`
 
@@ -61,18 +73,23 @@ LHM_LOCAL_CONFIG=./other.yml git commit
 
 ### Hook execution
 
-When git triggers a hook, it invokes the symlink in `~/.lhm/hooks/`. `lhm` detects the hook name from `argv[0]` and:
+When git triggers a hook, it invokes the symlink in the hooks directory. `lhm` detects the hook name from `argv[0]` and:
 
 0. **lefthook not in PATH**: falls back to executing `.git/hooks/<hook>` directly (if it exists), bypassing all config merging
-1. **No config at all** (no global, no repo, no adapter): hook is skipped silently
-2. **Both configs exist** (`~/.lefthook.yaml` + `$REPO/lefthook.yaml`): merges global and repo configs, runs `lefthook run <hook>` with `LEFTHOOK_CONFIG` pointing to the merged temp file
-3. **Global only** (no repo config or adapter): runs `lefthook run <hook>` with the global config
-4. **Repo/adapter only** (no global config): runs `lefthook run <hook>` with the repo or adapter config
-5. **No repo config, but adapter detected**: generates a dynamic lefthook config from the adapter, merges it with the global config (if present), and runs `lefthook run <hook>`
+1. **No config at all** (no system, no global, no repo, no adapter): hook is skipped silently
+2. **Configs exist**: merges all available layers in order (system, global, repo/adapter), runs `lefthook run <hook>` with `LEFTHOOK_CONFIG` pointing to the merged temp file
+
+Config is resolved as a three-layer merge, where later layers override earlier ones:
+
+1. **System** (`/usr/local/etc/lefthook.yaml`) — organizational baseline
+2. **User global** (`~/.local/etc/lefthook.yaml`) — per-user overrides
+3. **Repo** (`$REPO/lefthook.yaml` or adapter) — per-repo overrides
+
+Any layer may be absent. When a repo has no lefthook config, the adapter system is used in its place (see below).
 
 ### Adapters
 
-When a repo has no `lefthook.yaml`, lhm checks for other git hook managers and transparently adapts them. The generated adapter config is merged with `~/.lefthook.yaml` using the standard merging system, so global hooks still apply.
+When a repo has no `lefthook.yaml`, lhm checks for other git hook managers and transparently adapts them. The generated adapter config is merged with `~/.local/etc/lefthook.yaml` using the standard merging system, so global hooks still apply.
 
 Adapters are tried in this order (first match wins):
 

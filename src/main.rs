@@ -479,7 +479,24 @@ fn run_hook(hook_name: &str, args: Vec<String>, overrides: &ConfigOverrides) -> 
 mod tests {
     use super::*;
     use std::fs;
+    use std::io::Write;
     use std::process::Command;
+
+    /// Write a script file with executable permissions and explicit sync+close
+    /// before returning, avoiding ETXTBSY on Linux.
+    #[cfg(unix)]
+    fn write_test_script(path: &Path, content: &str) {
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o755)
+            .open(path)
+            .unwrap();
+        f.write_all(content.as_bytes()).unwrap();
+        f.sync_all().unwrap();
+    }
 
     fn yaml(s: &str) -> Value {
         serde_yaml::from_str(s).unwrap()
@@ -495,13 +512,7 @@ mod tests {
         let hooks = dir.path().join(".git/hooks");
         fs::create_dir_all(&hooks).unwrap();
         let hook = hooks.join("pre-commit");
-        fs::write(&hook, "#!/bin/sh\nexit 0\n").unwrap();
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
-        }
+        write_test_script(&hook, "#!/bin/sh\nexit 0\n");
 
         let status = Command::new(&hook).status().expect("hook script should be executable");
         assert!(status.success());
@@ -520,13 +531,7 @@ mod tests {
         let hooks = dir.path().join(".git/hooks");
         fs::create_dir_all(&hooks).unwrap();
         let hook = hooks.join("pre-commit");
-        fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
-        }
+        write_test_script(&hook, "#!/bin/sh\nexit 1\n");
 
         let status = Command::new(&hook).status().expect("hook script should be executable");
         assert!(!status.success());

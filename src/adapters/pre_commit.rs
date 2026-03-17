@@ -134,7 +134,7 @@ fn translate_hook(hook: &Hook) -> Option<Mapping> {
     cmd.insert(str_val("run"), str_val(&run_parts.join(" ")));
 
     if let Some(ref files) = hook.files {
-        cmd.insert(str_val("files"), str_val(files));
+        cmd.insert(str_val("files"), str_val(&format!("git ls-files | grep -E '{files}'")));
     }
     if let Some(ref exclude) = hook.exclude {
         cmd.insert(str_val("exclude"), str_val(exclude));
@@ -414,7 +414,10 @@ mod tests {
             types_or: vec![],
         };
         let cmd = translate_hook(&hook).unwrap();
-        assert_eq!(cmd.get("files").unwrap().as_str().unwrap(), r"\.py$");
+        assert_eq!(
+            cmd.get("files").unwrap().as_str().unwrap(),
+            r"git ls-files | grep -E '\.py$'"
+        );
         assert_eq!(cmd.get("exclude").unwrap().as_str().unwrap(), r"^tests/");
     }
 

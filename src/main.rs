@@ -14,7 +14,7 @@ use config::{
     ConfigOverrides, install_default_global_config, load_global_config, load_system_config, read_yaml, repo_config,
     write_merged_temp,
 };
-use hooks::{GIT_HOOKS, annotate_hooks, create_hook_scripts, is_hook_name};
+use hooks::{GIT_HOOKS, annotate_hooks, create_hook_symlinks, is_hook_name};
 use merge::merge_configs;
 
 fn init_logger(cli_debug: bool) {
@@ -91,14 +91,6 @@ enum Commands {
         #[arg(long)]
         system: bool,
     },
-    /// Run a git hook by name (used by hook wrapper scripts)
-    RunHook {
-        /// The git hook to run (e.g. pre-commit, pre-push)
-        hook: String,
-        /// Arguments forwarded from git
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<String>,
-    },
 }
 
 const SYSTEM_BASE: &str = "/usr/local";
@@ -135,6 +127,15 @@ impl InstallScope {
 }
 
 fn main() -> ExitCode {
+    let invoked_as = invoked_name();
+
+    if is_hook_name(&invoked_as) {
+        init_logger(false);
+        debug!("invoked as hook: {invoked_as}");
+        let overrides = ConfigOverrides::from_env();
+        return run_hook(&invoked_as, env::args().skip(1).collect(), &overrides);
+    }
+
     let cli = Cli::parse();
     init_logger(cli.debug);
     let overrides = ConfigOverrides::new(cli.global_config, cli.local_config);
@@ -164,15 +165,17 @@ fn main() -> ExitCode {
             }
             disable(scope)
         }
-        Commands::RunHook { hook, args } => {
-            if !is_hook_name(&hook) {
-                error!("unknown hook: {hook}");
-                return ExitCode::FAILURE;
-            }
-            let overrides = ConfigOverrides::from_env();
-            run_hook(&hook, args, &overrides)
-        }
     }
+}
+
+fn invoked_name() -> String {
+    env::args()
+        .next()
+        .as_deref()
+        .and_then(|s| Path::new(s).file_name())
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_string()
 }
 
 fn home_dir() -> PathBuf {
@@ -211,7 +214,7 @@ fn install(scope: InstallScope) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    if let Err(e) = create_hook_scripts(&dir, &binary) {
+    if let Err(e) = create_hook_symlinks(&dir, &binary) {
         error!("{e}");
         return ExitCode::FAILURE;
     }

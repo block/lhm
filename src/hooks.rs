@@ -1,6 +1,7 @@
 use log::debug;
 use serde_yaml::Value;
 use std::fs;
+use std::os::unix::fs::symlink;
 use std::path::Path;
 
 pub const GIT_HOOKS: &[&str] = &[
@@ -34,40 +35,17 @@ const SERIAL_HOOKS: &[&str] = &[
     "prepare-commit-msg",
 ];
 
-/// Generate the content of a shell wrapper script that invokes `lhm run-hook`.
-/// The hook name is baked into the script, so renaming the file won't break dispatch.
-fn hook_script(binary: &Path, hook_name: &str) -> String {
-    format!(
-        "#!/bin/sh\nexec \"{}\" run-hook {} \"$@\"\n",
-        binary.display(),
-        hook_name,
-    )
-}
-
-/// Write shell wrapper scripts for every standard git hook into `dir`.
-/// Each script invokes `lhm run-hook <hook_name>`, making hook identity
-/// independent of the filename — immune to renaming by other tools.
-pub fn create_hook_scripts(dir: &Path, binary: &Path) -> Result<(), String> {
+pub fn create_hook_symlinks(dir: &Path, binary: &Path) -> Result<(), String> {
     fs::create_dir_all(dir).map_err(|e| format!("failed to create {}: {e}", dir.display()))?;
 
     remove_stale_hooks(dir);
 
     for hook in GIT_HOOKS {
-        let path = dir.join(hook);
-        let _ = fs::remove_file(&path);
-        let content = hook_script(binary, hook);
-        fs::write(&path, &content).map_err(|e| format!("failed to write {}: {e}", path.display()))?;
-        set_executable(&path)?;
+        let link = dir.join(hook);
+        let _ = fs::remove_file(&link);
+        symlink(binary, &link).map_err(|e| format!("failed to symlink {}: {e}", link.display()))?;
     }
     Ok(())
-}
-
-/// Mark a file as executable (owner rwx, group/other rx).
-#[cfg(unix)]
-fn set_executable(path: &Path) -> Result<(), String> {
-    use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o755))
-        .map_err(|e| format!("failed to chmod {}: {e}", path.display()))
 }
 
 /// Remove any entries in the hooks dir that aren't in the current `GIT_HOOKS` list.
@@ -147,115 +125,62 @@ mod tests {
     }
 
     #[test]
-    fn test_hook_script_content() {
-        let content = hook_script(Path::new("/usr/local/bin/lhm"), "pre-commit");
-        assert_eq!(
-            content,
-            "#!/bin/sh\nexec \"/usr/local/bin/lhm\" run-hook pre-commit \"$@\"\n"
-        );
-    }
-
-    #[test]
-    fn test_hook_script_embeds_hook_name_not_filename() {
-        let content = hook_script(Path::new("/bin/lhm"), "prepare-commit-msg");
-        assert!(content.contains("run-hook prepare-commit-msg"));
-    }
-
-    #[test]
-    fn test_create_hook_scripts() {
+    fn test_create_hook_symlinks() {
         let dir = tempfile::tempdir().unwrap();
         let hooks = dir.path().join("hooks");
-        let fake_binary = Path::new("/usr/local/bin/lhm");
+        let fake_binary = dir.path().join("lhm");
+        fs::write(&fake_binary, "fake").unwrap();
 
-        create_hook_scripts(&hooks, fake_binary).unwrap();
+        create_hook_symlinks(&hooks, &fake_binary).unwrap();
 
         for hook in GIT_HOOKS {
-            let path = hooks.join(hook);
-            assert!(path.is_file(), "{hook} should exist");
-
-            let content = fs::read_to_string(&path).unwrap();
-            assert!(content.starts_with("#!/bin/sh\n"), "{hook} has shebang");
-            assert!(
-                content.contains(&format!("run-hook {hook}")),
-                "{hook} script invokes run-hook with correct name: {content}"
-            );
-
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let mode = fs::metadata(&path).unwrap().permissions().mode();
-                assert_eq!(mode & 0o755, 0o755, "{hook} is executable");
-            }
+            let link = hooks.join(hook);
+            assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
+            assert_eq!(fs::read_link(&link).unwrap(), fake_binary);
         }
     }
 
     #[test]
-    fn test_create_hook_scripts_overwrites_existing() {
+    fn test_create_hook_symlinks_overwrites_existing() {
         let dir = tempfile::tempdir().unwrap();
         let hooks = dir.path().join("hooks");
         fs::create_dir_all(&hooks).unwrap();
 
-        fs::write(hooks.join("pre-commit"), "old content").unwrap();
+        // Create a pre-existing file where a symlink will go
+        fs::write(hooks.join("pre-commit"), "old").unwrap();
 
-        let fake_binary = Path::new("/usr/local/bin/lhm");
-        create_hook_scripts(&hooks, fake_binary).unwrap();
+        let fake_binary = dir.path().join("lhm");
+        fs::write(&fake_binary, "fake").unwrap();
 
-        let content = fs::read_to_string(hooks.join("pre-commit")).unwrap();
-        assert!(content.contains("run-hook pre-commit"), "overwritten: {content}");
-    }
+        create_hook_symlinks(&hooks, &fake_binary).unwrap();
 
-    #[cfg(unix)]
-    #[test]
-    fn test_create_hook_scripts_replaces_symlinks() {
-        use std::os::unix::fs::symlink;
-
-        let dir = tempfile::tempdir().unwrap();
-        let hooks = dir.path().join("hooks");
-        fs::create_dir_all(&hooks).unwrap();
-
-        let target = dir.path().join("fake-binary");
-        fs::write(&target, "original binary content").unwrap();
-        symlink(&target, hooks.join("pre-commit")).unwrap();
-
-        let fake_binary = Path::new("/usr/local/bin/lhm");
-        create_hook_scripts(&hooks, fake_binary).unwrap();
-
-        let meta = hooks.join("pre-commit").symlink_metadata().unwrap();
-        assert!(meta.file_type().is_file(), "symlink replaced with regular file");
-        assert!(!meta.file_type().is_symlink(), "no longer a symlink");
-
-        let content = fs::read_to_string(hooks.join("pre-commit")).unwrap();
-        assert!(
-            content.contains("run-hook pre-commit"),
-            "has wrapper content: {content}"
-        );
-
-        let target_content = fs::read_to_string(&target).unwrap();
-        assert_eq!(
-            target_content, "original binary content",
-            "symlink target not clobbered"
-        );
+        let link = hooks.join("pre-commit");
+        assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
+        assert_eq!(fs::read_link(&link).unwrap(), fake_binary);
     }
 
     #[test]
-    fn test_create_hook_scripts_removes_stale_hooks() {
+    fn test_create_hook_symlinks_removes_stale_hooks() {
         let dir = tempfile::tempdir().unwrap();
         let hooks = dir.path().join("hooks");
         fs::create_dir_all(&hooks).unwrap();
 
+        // Create hooks that are no longer in GIT_HOOKS
         let stale = ["reference-transaction", "fsmonitor-watchman", "update"];
         for name in &stale {
             fs::write(hooks.join(name), "old").unwrap();
         }
 
-        let fake_binary = Path::new("/usr/local/bin/lhm");
-        create_hook_scripts(&hooks, fake_binary).unwrap();
+        let fake_binary = dir.path().join("lhm");
+        fs::write(&fake_binary, "fake").unwrap();
+
+        create_hook_symlinks(&hooks, &fake_binary).unwrap();
 
         for name in &stale {
             assert!(!hooks.join(name).exists(), "stale hook {name} should be removed");
         }
         for hook in GIT_HOOKS {
-            assert!(hooks.join(hook).is_file());
+            assert!(hooks.join(hook).symlink_metadata().unwrap().file_type().is_symlink());
         }
     }
 

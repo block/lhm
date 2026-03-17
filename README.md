@@ -27,7 +27,7 @@ for repo configs), where `<ext>` is `yml`, `yaml`, `json`, `jsonc`, or `toml`.
 
 ### `lhm install`
 
-- Creates shell wrapper scripts for all standard git hooks in `~/.local/libexec/lhm/hooks/`, each invoking `lhm run-hook <hook>`
+- Creates symlinks for all standard git hooks in `~/.local/libexec/lhm/hooks/`, each pointing to the `lhm` binary
 - Sets `git config --global core.hooksPath ~/.local/libexec/lhm/hooks`
 - Writes a default `~/.local/etc/lefthook.yaml` if no user config exists
 
@@ -35,17 +35,17 @@ for repo configs), where `<ext>` is `yml`, `yaml`, `json`, `jsonc`, or `toml`.
 
 Same as `lhm install` but targets a system-wide location (requires root):
 
-- Creates shell wrapper scripts in `/usr/local/libexec/lhm/hooks/`
+- Creates symlinks in `/usr/local/libexec/lhm/hooks/`
 - Sets `git config --system core.hooksPath /usr/local/libexec/lhm/hooks`
 - Writes a default `/usr/local/etc/lefthook.yaml` if no system config exists
 
 ### `lhm disable`
 
-Unsets `git config --global core.hooksPath`, disabling lhm. The hook scripts in `~/.local/libexec/lhm/hooks/` are left in place so `lhm install` can re-enable quickly.
+Unsets `git config --global core.hooksPath`, disabling lhm. The hook symlinks in `~/.local/libexec/lhm/hooks/` are left in place so `lhm install` can re-enable quickly.
 
 ### `lhm disable --system`
 
-Unsets `git config --system core.hooksPath` (requires root). The hook scripts in `/usr/local/libexec/lhm/hooks/` are left in place.
+Unsets `git config --system core.hooksPath` (requires root). The hook symlinks in `/usr/local/libexec/lhm/hooks/` are left in place.
 
 ### `lhm dry-run`
 
@@ -73,7 +73,7 @@ LHM_LOCAL_CONFIG=./other.yml git commit
 
 ### Hook execution
 
-When git triggers a hook, it runs the wrapper script in the hooks directory. Each script calls `lhm run-hook <hook>`, where the hook name is baked into the script content — making it immune to filename renaming by other tools that inject themselves into `core.hooksPath`.
+When git triggers a hook, it invokes the symlink in the hooks directory. `lhm` detects the hook name from `argv[0]` and:
 
 0. **lefthook not in PATH**: falls back to executing `.git/hooks/<hook>` directly (if it exists), bypassing all config merging
 1. **No config at all** (no system, no global, no repo, no adapter): hook is skipped silently

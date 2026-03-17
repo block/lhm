@@ -95,7 +95,7 @@ Adapters are tried in this order (first match wins):
 
 | Adapter | Detects | Behavior |
 |---------|---------|----------|
-| **pre-commit** | `.pre-commit-config.yaml` | Translates `repo: local` hooks into lefthook commands (`entry` + `args` → `run`, `types`/`types_or` → `glob`, `files`/`exclude` preserved). Remote repos are skipped. |
+| **pre-commit** | `.pre-commit-config.yaml` | Parses config to determine which stages have hooks, then delegates to `pre-commit run --hook-stage <stage>`. All hook types (local and remote) are supported. When no `stages` or `default_stages` is set, defaults to the `pre-commit` stage. |
 | **husky** | `.husky/` directory | Runs `.husky/<hook>` (if script exists) |
 | **hooks-dir** | `.hooks/` or `git-hooks/` directory | Runs `<dir>/<hook>` (if script exists) and all `<dir>/<hook>-*` prefixed scripts as parallel lefthook commands. Checked in order (first match wins). `.git/hooks/` is intentionally excluded to avoid double-executing hooks already handled by dedicated adapters or lhm itself. |
 

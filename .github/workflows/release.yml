@@ -35,7 +35,7 @@ jobs:
           mv "target/${TARGET}"/release/lhm "${TARGET_PATH}"
           bzip2 -f9 "${TARGET_PATH}"
           echo "TARGET_PATH=${TARGET_PATH}.bz2" >> "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # ratchet:actions/upload-artifact@v6
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # ratchet:actions/upload-artifact@v7
         with:
           name: lhm-${{ matrix.arch }}-${{ matrix.target-suffix }}
           path: ${{ steps.build.outputs.TARGET_PATH }}
@@ -52,12 +52,33 @@ jobs:
         with:
           fetch-depth: 0
       - uses: cashapp/activate-hermit@e49f5cb4dd64ff0b0b659d1d8df499595451155a # ratchet:cashapp/activate-hermit@v1
-      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # ratchet:actions/download-artifact@v7
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # ratchet:actions/download-artifact@v8
         with:
           merge-multiple: true
       - run: just release-notes > release-notes.md
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - run: gh release create ${{ github.ref_name }} lhm-*.bz2 --notes-file release-notes.md
+      - run: gh release create ${{ github.ref_name }} lhm-*.bz2 --notes-file release-notes.md --title ${{ github.ref_name }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate token for tap release
+        id: generate_token
+        uses: actions/create-github-app-token@f8d387b68d61c58ab83c6c016672934102569859 # ratchet:actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.BLOCK_HOMEBREW_TAP_APP_ID }}
+          private-key: ${{ secrets.BLOCK_HOMEBREW_TAP_PRIVATE_KEY }}
+          owner: block
+          repositories: homebrew-tap
+
+      - name: Trigger Formula Bump
+        run: |
+          gh workflow run bump-formula.yaml \
+            --repo block/homebrew-tap \
+            -f repo=block/lhm \
+            -f formula=lhm \
+            -f "tag=$TAG"
+        env:
+          GITHUB_TOKEN: ${{ steps.generate_token.outputs.token }}
+          TAG: ${{ github.ref_name }}
+          FILE_HASH: ${{ steps.generate_hash.outputs.file_hash }}

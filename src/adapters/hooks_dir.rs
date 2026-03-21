@@ -1,5 +1,7 @@
 use serde_yaml::Value;
 use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 use super::Adapter;
@@ -23,6 +25,20 @@ fn find_hooks_dir(root: &Path) -> Option<&'static str> {
     HOOKS_DIR_NAMES.iter().copied().find(|name| root.join(name).is_dir())
 }
 
+/// Check whether a directory entry is executable (has any execute bit on Unix).
+#[cfg(unix)]
+fn is_executable(entry: &fs::DirEntry) -> bool {
+    entry
+        .metadata()
+        .map(|m| m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable(_entry: &fs::DirEntry) -> bool {
+    true
+}
+
 /// Collect sorted filenames from `hooks_dir` that match `hook_name` exactly
 /// or start with `{hook_name}-`.
 fn matching_scripts(hooks_dir: &Path, hook_name: &str) -> Vec<String> {
@@ -33,6 +49,7 @@ fn matching_scripts(hooks_dir: &Path, hook_name: &str) -> Vec<String> {
     let mut names: Vec<String> = entries
         .filter_map(|e| e.ok())
         .filter(|e| e.path().is_file())
+        .filter(is_executable)
         .filter_map(|e| {
             let name = e.file_name().to_string_lossy().into_owned();
             if name == hook_name || name.starts_with(&prefix) {
@@ -86,10 +103,19 @@ mod tests {
     use super::*;
     use std::fs;
     #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+    #[cfg(unix)]
     use std::os::unix::fs::symlink;
 
     fn adapter() -> HooksDirAdapter {
         HooksDirAdapter
+    }
+
+    /// Write a hook script and mark it executable (on Unix).
+    fn write_executable(path: &std::path::Path, content: &str) {
+        fs::write(path, content).unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
     }
 
     #[test]
@@ -135,8 +161,8 @@ mod tests {
         let git_hooks = dir.path().join("git-hooks");
         fs::create_dir_all(&dot_hooks).unwrap();
         fs::create_dir_all(&git_hooks).unwrap();
-        fs::write(dot_hooks.join("pre-commit"), "#!/bin/sh\n").unwrap();
-        fs::write(git_hooks.join("pre-commit"), "#!/bin/sh\n").unwrap();
+        write_executable(&dot_hooks.join("pre-commit"), "#!/bin/sh\n");
+        write_executable(&git_hooks.join("pre-commit"), "#!/bin/sh\n");
 
         let config = adapter().generate_config(dir.path(), "pre-commit").unwrap();
         let out = serde_yaml::to_string(&config).unwrap();
@@ -149,7 +175,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let hooks_dir = dir.path().join(".hooks");
         fs::create_dir_all(&hooks_dir).unwrap();
-        fs::write(hooks_dir.join("pre-commit"), "#!/bin/sh\necho hi\n").unwrap();
+        write_executable(&hooks_dir.join("pre-commit"), "#!/bin/sh\necho hi\n");
 
         let config = adapter().generate_config(dir.path(), "pre-commit").unwrap();
         let out = serde_yaml::to_string(&config).unwrap();
@@ -162,7 +188,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let hooks_dir = dir.path().join("git-hooks");
         fs::create_dir_all(&hooks_dir).unwrap();
-        fs::write(hooks_dir.join("pre-commit"), "#!/bin/sh\necho hi\n").unwrap();
+        write_executable(&hooks_dir.join("pre-commit"), "#!/bin/sh\necho hi\n");
 
         let config = adapter().generate_config(dir.path(), "pre-commit").unwrap();
         let out = serde_yaml::to_string(&config).unwrap();
@@ -184,8 +210,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let hooks_dir = dir.path().join(".hooks");
         fs::create_dir_all(&hooks_dir).unwrap();
-        fs::write(hooks_dir.join("pre-push"), "#!/bin/sh\necho push\n").unwrap();
-        fs::write(hooks_dir.join("commit-msg"), "#!/bin/sh\necho msg\n").unwrap();
+        write_executable(&hooks_dir.join("pre-push"), "#!/bin/sh\necho push\n");
+        write_executable(&hooks_dir.join("commit-msg"), "#!/bin/sh\necho msg\n");
 
         let push_config = adapter().generate_config(dir.path(), "pre-push").unwrap();
         let out = serde_yaml::to_string(&push_config).unwrap();
@@ -205,12 +231,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let hooks_dir = dir.path().join(".hooks");
         fs::create_dir_all(&hooks_dir).unwrap();
-        fs::write(hooks_dir.join("pre-commit"), "#!/bin/sh\n").unwrap();
-        fs::write(hooks_dir.join("pre-commit-checkstyle"), "#!/bin/sh\n").unwrap();
-        fs::write(hooks_dir.join("pre-commit-detekt"), "#!/bin/sh\n").unwrap();
+        write_executable(&hooks_dir.join("pre-commit"), "#!/bin/sh\n");
+        write_executable(&hooks_dir.join("pre-commit-checkstyle"), "#!/bin/sh\n");
+        write_executable(&hooks_dir.join("pre-commit-detekt"), "#!/bin/sh\n");
         // Should NOT be picked up for pre-commit
-        fs::write(hooks_dir.join("pre-push"), "#!/bin/sh\n").unwrap();
-        fs::write(hooks_dir.join("pre-push-detekt"), "#!/bin/sh\n").unwrap();
+        write_executable(&hooks_dir.join("pre-push"), "#!/bin/sh\n");
+        write_executable(&hooks_dir.join("pre-push-detekt"), "#!/bin/sh\n");
 
         let config = adapter().generate_config(dir.path(), "pre-commit").unwrap();
         let out = serde_yaml::to_string(&config).unwrap();
@@ -230,7 +256,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let hooks_dir = dir.path().join(".hooks");
         fs::create_dir_all(&hooks_dir).unwrap();
-        fs::write(hooks_dir.join("pre-commit-ktlint"), "#!/bin/sh\n").unwrap();
+        write_executable(&hooks_dir.join("pre-commit-ktlint"), "#!/bin/sh\n");
 
         let config = adapter().generate_config(dir.path(), "pre-commit").unwrap();
         let out = serde_yaml::to_string(&config).unwrap();
@@ -245,8 +271,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let hooks_dir = dir.path().join("git-hooks");
         fs::create_dir_all(&hooks_dir).unwrap();
-        fs::write(hooks_dir.join("pre-push"), "#!/bin/sh\n").unwrap();
-        fs::write(hooks_dir.join("pre-push-detekt"), "#!/bin/sh\n").unwrap();
+        write_executable(&hooks_dir.join("pre-push"), "#!/bin/sh\n");
+        write_executable(&hooks_dir.join("pre-push-detekt"), "#!/bin/sh\n");
 
         let config = adapter().generate_config(dir.path(), "pre-push").unwrap();
         let out = serde_yaml::to_string(&config).unwrap();
@@ -267,7 +293,7 @@ mod tests {
         fs::create_dir_all(&hooks_dir).unwrap();
 
         let target = dir.path().join("shared-hook");
-        fs::write(&target, "#!/bin/sh\necho hi\n").unwrap();
+        write_executable(&target, "#!/bin/sh\necho hi\n");
         symlink(&target, hooks_dir.join("pre-commit")).unwrap();
 
         let config = adapter().generate_config(dir.path(), "pre-commit").unwrap();
@@ -283,9 +309,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let hooks_dir = dir.path().join(".hooks");
         fs::create_dir_all(&hooks_dir).unwrap();
-        fs::write(hooks_dir.join("pre-commit-zzz"), "#!/bin/sh\n").unwrap();
-        fs::write(hooks_dir.join("pre-commit-aaa"), "#!/bin/sh\n").unwrap();
-        fs::write(hooks_dir.join("pre-commit"), "#!/bin/sh\n").unwrap();
+        write_executable(&hooks_dir.join("pre-commit-zzz"), "#!/bin/sh\n");
+        write_executable(&hooks_dir.join("pre-commit-aaa"), "#!/bin/sh\n");
+        write_executable(&hooks_dir.join("pre-commit"), "#!/bin/sh\n");
 
         let scripts = matching_scripts(&hooks_dir, "pre-commit");
         assert_eq!(scripts, vec!["pre-commit", "pre-commit-aaa", "pre-commit-zzz"]);
@@ -296,10 +322,36 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let hooks_dir = dir.path().join(".hooks");
         fs::create_dir_all(&hooks_dir).unwrap();
-        fs::write(hooks_dir.join("pre-commit"), "#!/bin/sh\n").unwrap();
+        write_executable(&hooks_dir.join("pre-commit"), "#!/bin/sh\n");
         fs::create_dir_all(hooks_dir.join("pre-commit-subdir")).unwrap();
 
         let scripts = matching_scripts(&hooks_dir, "pre-commit");
         assert_eq!(scripts, vec!["pre-commit"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_matching_scripts_ignores_non_executable() {
+        let dir = tempfile::tempdir().unwrap();
+        let hooks_dir = dir.path().join(".hooks");
+        fs::create_dir_all(&hooks_dir).unwrap();
+        write_executable(&hooks_dir.join("pre-commit"), "#!/bin/sh\n");
+        // Non-executable file should be ignored
+        fs::write(hooks_dir.join("pre-commit-noexec"), "#!/bin/sh\n").unwrap();
+
+        let scripts = matching_scripts(&hooks_dir, "pre-commit");
+        assert_eq!(scripts, vec!["pre-commit"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_generate_config_skips_non_executable_hooks() {
+        let dir = tempfile::tempdir().unwrap();
+        let hooks_dir = dir.path().join(".hooks");
+        fs::create_dir_all(&hooks_dir).unwrap();
+        // Only non-executable files — should produce no config
+        fs::write(hooks_dir.join("post-checkout"), "#!/bin/sh\n").unwrap();
+
+        assert!(adapter().generate_config(dir.path(), "post-checkout").is_none());
     }
 }

@@ -47,6 +47,7 @@ fn init_logger(cli_debug: bool) {
 #[derive(Parser)]
 #[command(
     name = "lhm",
+    version,
     about = "\
 Merges global and per-repo lefthook configs.
 

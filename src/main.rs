@@ -130,7 +130,10 @@ impl InstallScope {
     }
 
     fn config_dir(&self) -> PathBuf {
-        self.base_dir().join("etc")
+        match self {
+            Self::User => home_dir().join(".config"),
+            Self::System => self.base_dir().join("etc"),
+        }
     }
 }
 
@@ -566,7 +569,7 @@ mod tests {
 
     #[test]
     fn test_install_scope_user_config_dir() {
-        assert!(InstallScope::User.config_dir().ends_with(".local/etc"));
+        assert!(InstallScope::User.config_dir().ends_with(".config"));
     }
 
     #[test]
@@ -574,8 +577,12 @@ mod tests {
         for scope in [InstallScope::User, InstallScope::System] {
             let base = scope.base_dir();
             assert_eq!(scope.hooks_dir(), base.join("libexec/lhm/hooks"));
-            assert_eq!(scope.config_dir(), base.join("etc"));
         }
+        assert_eq!(
+            InstallScope::System.config_dir(),
+            InstallScope::System.base_dir().join("etc")
+        );
+        assert!(InstallScope::User.config_dir().ends_with(".config"));
     }
 
     #[test]

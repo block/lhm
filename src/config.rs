@@ -84,7 +84,7 @@ pub fn find_config(dir: &Path, check_dot_config: bool) -> Option<PathBuf> {
     None
 }
 
-/// Find the user-level lefthook config in the given directory (e.g. `~/.local/etc`).
+/// Find the user-level lefthook config in the given directory (e.g. `~/.config`).
 pub fn global_config(home: &Path, overrides: &ConfigOverrides) -> Option<PathBuf> {
     if let Some(ref p) = overrides.global_config {
         debug!("using global config override: {}", p.display());
@@ -121,7 +121,7 @@ pub fn install_default_global_config(dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Load the user-level config from `~/.local/etc/lefthook.yaml` (or override) if it exists.
+/// Load the user-level config from `~/.config/lefthook.yaml` (or override) if it exists.
 pub fn load_global_config(dir: &Path, overrides: &ConfigOverrides) -> Result<Option<Value>, String> {
     match global_config(dir, overrides) {
         Some(path) => read_yaml(&path).map(Some),

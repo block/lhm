@@ -29,7 +29,7 @@ for repo configs), where `<ext>` is `yml`, `yaml`, `json`, `jsonc`, or `toml`.
 
 - Creates shell wrapper scripts for all standard git hooks in `~/.local/libexec/lhm/hooks/`, each invoking `lhm run-hook <hook>`
 - Sets `git config --global core.hooksPath ~/.local/libexec/lhm/hooks`
-- Writes a default `~/.local/etc/lefthook.yaml` if no user config exists
+- Writes a default `~/.config/lefthook.yaml` if no user config exists
 
 ### `lhm install --system`
 
@@ -82,14 +82,14 @@ When git triggers a hook, it runs the wrapper script in the hooks directory. Eac
 Config is resolved as a three-layer merge, where later layers override earlier ones:
 
 1. **System** (`/usr/local/etc/lefthook.yaml`) — organizational baseline
-2. **User global** (`~/.local/etc/lefthook.yaml`) — per-user overrides
+2. **User global** (`~/.config/lefthook.yaml`) — per-user overrides
 3. **Repo** (`$REPO/lefthook.yaml` or adapter) — per-repo overrides
 
 Any layer may be absent. When a repo has no lefthook config, the adapter system is used in its place (see below).
 
 ### Adapters
 
-When a repo has no `lefthook.yaml`, lhm checks for other git hook managers and transparently adapts them. The generated adapter config is merged with `~/.local/etc/lefthook.yaml` using the standard merging system, so global hooks still apply.
+When a repo has no `lefthook.yaml`, lhm checks for other git hook managers and transparently adapts them. The generated adapter config is merged with `~/.config/lefthook.yaml` using the standard merging system, so global hooks still apply.
 
 Adapters are tried in this order (first match wins):
 

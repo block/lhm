@@ -318,7 +318,12 @@ fn resolve_config(
         layers.push(v.clone());
     }
     if let Some(v) = global {
-        layers.push(strip_no_tty(v.clone()));
+        let v = if local.is_some() {
+            strip_no_tty(v.clone())
+        } else {
+            v.clone()
+        };
+        layers.push(v);
     }
     if let Some(v) = local {
         layers.push(v);
@@ -694,12 +699,26 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_config_strips_no_tty_from_global() {
+    fn test_resolve_config_strips_no_tty_from_global_when_local_present() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo_path = dir.path().join("lefthook.yml");
+        fs::write(&repo_path, "pre-commit:\n  commands:\n    fmt:\n      run: repo-fmt\n").unwrap();
+
         let global = Some(yaml("no_tty: true\npre-push:\n  commands:\n    t:\n      run: usr\n"));
-        let result = resolve_config(&None, &global, &None, &None).unwrap().unwrap();
+        let result = resolve_config(&None, &global, &Some(repo_path), &None)
+            .unwrap()
+            .unwrap();
         let out = to_yaml(&result);
         assert!(!out.contains("no_tty"), "no_tty stripped from global: {out}");
         assert!(out.contains("usr"), "other keys preserved: {out}");
+    }
+
+    #[test]
+    fn test_resolve_config_keeps_no_tty_in_global_when_no_local() {
+        let global = Some(yaml("no_tty: true\npre-push:\n  commands:\n    t:\n      run: usr\n"));
+        let result = resolve_config(&None, &global, &None, &None).unwrap().unwrap();
+        let out = to_yaml(&result);
+        assert!(out.contains("no_tty: true"), "no_tty kept when no local: {out}");
     }
 
     #[test]

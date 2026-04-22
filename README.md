@@ -87,7 +87,7 @@ Config is resolved as a three-layer merge, where later layers override earlier o
 
 Any layer may be absent. When a repo has no lefthook config, the adapter system is used in its place (see below).
 
-The `no_tty` setting is automatically stripped from the user-global config before merging. This prevents a global config from disabling TTY for all repos — each repo should opt into `no_tty` explicitly.
+When a repo or adapter config is present, the `no_tty` setting is automatically stripped from the user-global config before merging. This prevents a global config from disabling TTY for all repos — each repo should opt into `no_tty` explicitly. When there is no local layer, `no_tty` is kept so it still takes effect for global-only setups.
 
 ### Adapters
 

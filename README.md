@@ -87,6 +87,8 @@ Config is resolved as a three-layer merge, where later layers override earlier o
 
 Any layer may be absent. When a repo has no lefthook config, the adapter system is used in its place (see below).
 
+The `no_tty` setting is automatically stripped from the user-global config before merging. This prevents a global config from disabling TTY for all repos — each repo should opt into `no_tty` explicitly.
+
 ### Adapters
 
 When a repo has no `lefthook.yaml`, lhm checks for other git hook managers and transparently adapts them. The generated adapter config is merged with `~/.config/lefthook.yaml` using the standard merging system, so global hooks still apply.

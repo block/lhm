@@ -290,6 +290,15 @@ fn merge_layers(layers: Vec<Value>) -> Option<Value> {
     layers.into_iter().reduce(merge_configs)
 }
 
+/// Remove `no_tty` from a config value so it cannot leak from a global layer
+/// into every repo. Repos that need it should set it themselves.
+fn strip_no_tty(mut value: Value) -> Value {
+    if let Value::Mapping(ref mut m) = value {
+        m.remove("no_tty");
+    }
+    value
+}
+
 /// Resolve system, user-global, repo, and adapter sources into a single merged config.
 fn resolve_config(
     system: &Option<Value>,
@@ -309,7 +318,7 @@ fn resolve_config(
         layers.push(v.clone());
     }
     if let Some(v) = global {
-        layers.push(v.clone());
+        layers.push(strip_no_tty(v.clone()));
     }
     if let Some(v) = local {
         layers.push(v);
@@ -682,5 +691,45 @@ mod tests {
         let out = to_yaml(&result);
         assert!(out.contains("repo-fmt"), "repo wins over adapter: {out}");
         assert!(!out.contains("adapter-fmt"), "adapter ignored: {out}");
+    }
+
+    #[test]
+    fn test_resolve_config_strips_no_tty_from_global() {
+        let global = Some(yaml("no_tty: true\npre-push:\n  commands:\n    t:\n      run: usr\n"));
+        let result = resolve_config(&None, &global, &None, &None).unwrap().unwrap();
+        let out = to_yaml(&result);
+        assert!(!out.contains("no_tty"), "no_tty stripped from global: {out}");
+        assert!(out.contains("usr"), "other keys preserved: {out}");
+    }
+
+    #[test]
+    fn test_resolve_config_no_tty_in_repo_preserved() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo_path = dir.path().join("lefthook.yml");
+        fs::write(
+            &repo_path,
+            "no_tty: true\npre-commit:\n  commands:\n    fmt:\n      run: repo-fmt\n",
+        )
+        .unwrap();
+
+        let result = resolve_config(&None, &None, &Some(repo_path), &None).unwrap().unwrap();
+        let out = to_yaml(&result);
+        assert!(out.contains("no_tty: true"), "repo no_tty preserved: {out}");
+    }
+
+    #[test]
+    fn test_strip_no_tty() {
+        let val = yaml("no_tty: true\noutput:\n  - success\n");
+        let stripped = strip_no_tty(val);
+        let out = to_yaml(&stripped);
+        assert!(!out.contains("no_tty"), "no_tty removed: {out}");
+        assert!(out.contains("success"), "other keys kept: {out}");
+    }
+
+    #[test]
+    fn test_strip_no_tty_absent() {
+        let val = yaml("output:\n  - success\n");
+        let stripped = strip_no_tty(val.clone());
+        assert_eq!(to_yaml(&stripped), to_yaml(&val));
     }
 }

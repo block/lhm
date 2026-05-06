@@ -89,7 +89,7 @@ impl Adapter for HooksDirAdapter {
                     let suffix = &script[hook_name.len() + 1..];
                     format!("hooks-dir-{suffix}")
                 };
-                format!("    {cmd_name}:\n      run: {dir_name}/{script}")
+                format!("    {cmd_name}:\n      run: {dir_name}/{script} {{0}}")
             })
             .collect();
 
@@ -180,7 +180,7 @@ mod tests {
         let config = adapter().generate_config(dir.path(), "pre-commit").unwrap();
         let out = serde_yaml::to_string(&config).unwrap();
         assert!(out.contains("pre-commit:"), "has hook key: {out}");
-        assert!(out.contains(".hooks/pre-commit"), "has run command: {out}");
+        assert!(out.contains(".hooks/pre-commit {0}"), "forwards git args: {out}");
     }
 
     #[test]

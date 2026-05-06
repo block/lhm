@@ -24,7 +24,7 @@ impl Adapter for HuskyAdapter {
             return None;
         }
 
-        let config = format!("{hook_name}:\n  commands:\n    husky:\n      run: .husky/{hook_name}\n");
+        let config = format!("{hook_name}:\n  commands:\n    husky:\n      run: .husky/{hook_name} {{0}}\n");
         serde_yaml::from_str(&config).ok()
     }
 }
@@ -68,7 +68,7 @@ mod tests {
         let config = adapter().generate_config(dir.path(), "pre-commit").unwrap();
         let out = serde_yaml::to_string(&config).unwrap();
         assert!(out.contains("pre-commit:"), "has hook key: {out}");
-        assert!(out.contains(".husky/pre-commit"), "has run command: {out}");
+        assert!(out.contains(".husky/pre-commit {0}"), "forwards git args: {out}");
     }
 
     #[test]

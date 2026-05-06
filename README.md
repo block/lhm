@@ -101,6 +101,10 @@ Adapters are tried in this order (first match wins):
 | **husky** | `.husky/` directory | Runs `.husky/<hook>` (if script exists) |
 | **hooks-dir** | `.hooks/` or `git-hooks/` directory | Runs `<dir>/<hook>` (if script exists and is executable) and all `<dir>/<hook>-*` prefixed executable scripts as parallel lefthook commands. Non-executable files are silently ignored. Checked in order (first match wins). `.git/hooks/` is intentionally excluded to avoid double-executing hooks already handled by dedicated adapters or lhm itself. |
 
+For the `husky` and `hooks-dir` adapters, git's hook arguments (e.g. `<remote-name> <remote-url>` for `pre-push`, the message file path for `commit-msg`) are forwarded to the script via lefthook's `{0}` template, so scripts receive them positionally just as git would deliver. The `pre-commit` adapter does not forward positional args because `pre-commit run --hook-stage` does not consume them.
+
+Stdin from git is plumbed through to scripts for hooks where git pipes data on stdin: `pre-push` (ref info) and `post-rewrite` (the rewritten-commit list). Each command in those hooks gets `use_stdin: true` in the merged config; lefthook caches stdin and replays it to every command, so this works correctly under `parallel: true`.
+
 ### Debugging
 
 Enable debug logging with `--debug` or `LHM_DEBUG=1`:

@@ -34,6 +34,13 @@ const SERIAL_HOOKS: &[&str] = &[
     "prepare-commit-msg",
 ];
 
+/// Client-side hooks where git pipes data on stdin: pre-push gets ref info,
+/// post-rewrite gets the rewritten-commit list. Each command in these hooks
+/// gets `use_stdin: true` so lefthook plumbs git's stdin through to the
+/// underlying script. lefthook caches stdin and replays it to every command
+/// that opts in, so this works correctly under `parallel: true`.
+const STDIN_HOOKS: &[&str] = &["pre-push", "post-rewrite"];
+
 /// Generate the content of a shell wrapper script that invokes `lhm run-hook`.
 /// The hook name is baked into the script, so renaming the file won't break dispatch.
 fn hook_script(binary: &Path, hook_name: &str) -> String {
@@ -91,6 +98,7 @@ fn remove_stale_hooks(dir: &Path) {
 /// Annotate adapter-generated config with lefthook settings:
 /// - `parallel: true` on hooks that don't mutate shared state
 /// - `stage_fixed: true` on each command within `pre-commit` and `pre-merge-commit` hooks
+/// - `use_stdin: true` on each command within hooks where git pipes data on stdin
 pub fn annotate_hooks(config: Value) -> Value {
     let Value::Mapping(mut root) = config else {
         return config;
@@ -103,20 +111,23 @@ pub fn annotate_hooks(config: Value) -> Value {
                 hook_map.insert(Value::String("parallel".to_string()), Value::Bool(true));
             }
             if name == "pre-commit" || name == "pre-merge-commit" {
-                set_stage_fixed(hook_map);
+                set_command_flag(hook_map, "stage_fixed");
+            }
+            if STDIN_HOOKS.contains(&name) {
+                set_command_flag(hook_map, "use_stdin");
             }
         }
     }
     Value::Mapping(root)
 }
 
-/// Add `stage_fixed: true` to every command in a hook mapping.
-fn set_stage_fixed(hook_map: &mut serde_yaml::Mapping) {
+/// Set `<flag>: true` on every command in a hook mapping.
+fn set_command_flag(hook_map: &mut serde_yaml::Mapping, flag: &str) {
     let commands_key = Value::String("commands".to_string());
     if let Some(Value::Mapping(commands)) = hook_map.get_mut(&commands_key) {
         for (_cmd_name, cmd_val) in commands.iter_mut() {
             if let Value::Mapping(cmd_map) = cmd_val {
-                cmd_map.insert(Value::String("stage_fixed".to_string()), Value::Bool(true));
+                cmd_map.insert(Value::String(flag.to_string()), Value::Bool(true));
             }
         }
     }
@@ -305,6 +316,32 @@ mod tests {
         let result = annotate_hooks(config);
         let out = to_yaml(&result);
         assert!(!out.contains("stage_fixed"), "no stage_fixed on pre-push: {out}");
+    }
+
+    #[test]
+    fn test_annotate_hooks_use_stdin_on_stdin_hooks() {
+        for hook in STDIN_HOOKS {
+            let config = yaml(&format!(
+                "{hook}:\n  commands:\n    foo:\n      run: echo hi\n    bar:\n      run: echo bye\n"
+            ));
+            let result = annotate_hooks(config);
+            let out = to_yaml(&result);
+            assert_eq!(
+                out.matches("use_stdin: true").count(),
+                2,
+                "both commands get use_stdin on {hook}: {out}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_annotate_hooks_no_use_stdin_on_other_hooks() {
+        for hook in &["pre-commit", "commit-msg", "post-commit", "post-checkout"] {
+            let config = yaml(&format!("{hook}:\n  commands:\n    foo:\n      run: echo hi\n"));
+            let result = annotate_hooks(config);
+            let out = to_yaml(&result);
+            assert!(!out.contains("use_stdin"), "no use_stdin on {hook}: {out}");
+        }
     }
 
     #[test]

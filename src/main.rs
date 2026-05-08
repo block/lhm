@@ -387,19 +387,35 @@ fn lefthook_in_path() -> bool {
         .is_ok()
 }
 
-/// Run the repo's `.git/hooks/<hook_name>` script directly.
+/// Resolve the path to a repo's git hook using `git rev-parse --git-path`.
+/// This works correctly in both normal repos and linked worktrees (where
+/// `.git` is a file pointing to the common git dir).
+fn resolve_git_hook_path(hook_name: &str) -> Option<PathBuf> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--git-path", &format!("hooks/{hook_name}")])
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let path = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+    if path.is_file() { Some(path) } else { None }
+}
+
+/// Run the repo's git hook script directly.
+/// Uses `git rev-parse --git-path` to find the hook, which handles both
+/// normal repos and linked worktrees correctly.
 /// Returns SUCCESS if the script doesn't exist (no hook to run).
 fn run_git_hook(hook_name: &str, args: Vec<String>) -> ExitCode {
-    let root = match repo_root() {
-        Some(r) => r,
-        None => return ExitCode::SUCCESS,
+    let hook_path = match resolve_git_hook_path(hook_name) {
+        Some(p) => p,
+        None => {
+            debug!("no git hook {hook_name} found, skipping");
+            return ExitCode::SUCCESS;
+        }
     };
-    let hook_path = root.join(".git/hooks").join(hook_name);
-    if !hook_path.is_file() {
-        debug!("no .git/hooks/{hook_name} found, skipping");
-        return ExitCode::SUCCESS;
-    }
-    debug!("running .git/hooks/{hook_name} directly (lefthook not in PATH)");
+    debug!("running {} directly", hook_path.display());
     let status = Command::new(&hook_path)
         .args(&args)
         .stdin(Stdio::inherit())
@@ -452,8 +468,8 @@ fn run_hook(hook_name: &str, args: Vec<String>, overrides: &ConfigOverrides) -> 
     let merged = match resolve_config(&system, &global, &repo, &adapter_config) {
         Ok(Some(m)) => m,
         Ok(None) => {
-            debug!("no config found, skipping hook");
-            return ExitCode::SUCCESS;
+            debug!("no config found, falling back to .git/hooks");
+            return run_git_hook(hook_name, args);
         }
         Err(e) => {
             error!("{e}");

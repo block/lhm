@@ -31,21 +31,9 @@ for repo configs), where `<ext>` is `yml`, `yaml`, `json`, `jsonc`, or `toml`.
 - Sets `git config --global core.hooksPath ~/.local/libexec/lhm/hooks`
 - Writes a default `~/.config/lefthook.yaml` if no user config exists
 
-### `lhm install --system`
-
-Same as `lhm install` but targets a system-wide location (requires root):
-
-- Creates shell wrapper scripts in `/usr/local/libexec/lhm/hooks/`
-- Sets `git config --system core.hooksPath /usr/local/libexec/lhm/hooks`
-- Writes a default `/usr/local/etc/lefthook.yaml` if no system config exists
-
 ### `lhm disable`
 
 Unsets `git config --global core.hooksPath`, disabling lhm. The hook scripts in `~/.local/libexec/lhm/hooks/` are left in place so `lhm install` can re-enable quickly.
-
-### `lhm disable --system`
-
-Unsets `git config --system core.hooksPath` (requires root). The hook scripts in `/usr/local/libexec/lhm/hooks/` are left in place.
 
 ### `lhm dry-run`
 
@@ -76,16 +64,15 @@ LHM_LOCAL_CONFIG=./other.yml git commit
 When git triggers a hook, it runs the wrapper script in the hooks directory. Each script calls `lhm run-hook <hook>`, where the hook name is baked into the script content — making it immune to filename renaming by other tools that inject themselves into `core.hooksPath`.
 
 0. **lefthook not in PATH**: falls back to executing `.git/hooks/<hook>` directly (if it exists), bypassing all config merging
-1. **No config at all** (no system, no global, no repo, no adapter): hook is skipped silently
-2. **Configs exist**: merges all available layers in order (system, global, repo/adapter), runs `lefthook run <hook>` with `LEFTHOOK_CONFIG` pointing to the merged temp file
+1. **No config at all** (no global, no repo, no adapter): hook is skipped silently
+2. **Configs exist**: merges all available layers in order (global, repo/adapter), runs `lefthook run <hook>` with `LEFTHOOK_CONFIG` pointing to the merged temp file
 
-Config is resolved as a three-layer merge, where later layers override earlier ones:
+Config is resolved as a two-layer merge, where later layers override earlier ones:
 
-1. **System** (`/usr/local/etc/lefthook.yaml`) — organizational baseline
-2. **User global** (`~/.config/lefthook.yaml`) — per-user overrides
-3. **Repo** (`$REPO/lefthook.yaml` or adapter) — per-repo overrides
+1. **User global** (`~/.config/lefthook.yaml`) — per-user defaults
+2. **Repo** (`$REPO/lefthook.yaml` or adapter) — per-repo overrides
 
-Any layer may be absent. When a repo has no lefthook config, the adapter system is used in its place (see below).
+Either layer may be absent. When a repo has no lefthook config, the adapter system is used in its place (see below).
 
 When a repo or adapter config is present, the `no_tty` setting is automatically stripped from the user-global config before merging. This prevents a global config from disabling TTY for all repos — each repo should opt into `no_tty` explicitly. When there is no local layer, `no_tty` is kept so it still takes effect for global-only setups.
 

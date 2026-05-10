@@ -6,9 +6,6 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
 
-/// System-wide config directory.
-pub const SYSTEM_CONFIG_DIR: &str = "/usr/local/etc";
-
 /// Overrides for the global and local (repo) config paths.
 /// CLI flags take precedence; env vars (`LHM_GLOBAL_CONFIG`, `LHM_LOCAL_CONFIG`)
 /// are used as fallback so that overrides work during hook invocations too.
@@ -93,11 +90,6 @@ pub fn global_config(home: &Path, overrides: &ConfigOverrides) -> Option<PathBuf
     find_config(home, false)
 }
 
-/// Find the system-wide lefthook config in `/usr/local/etc`.
-pub fn system_config() -> Option<PathBuf> {
-    find_config(Path::new(SYSTEM_CONFIG_DIR), false)
-}
-
 pub fn repo_config(root: &Path, overrides: &ConfigOverrides) -> Option<PathBuf> {
     if let Some(ref p) = overrides.local_config {
         debug!("using local config override: {}", p.display());
@@ -127,20 +119,6 @@ pub fn load_global_config(dir: &Path, overrides: &ConfigOverrides) -> Result<Opt
         Some(path) => read_yaml(&path).map(Some),
         None => {
             debug!("no user config file found");
-            Ok(None)
-        }
-    }
-}
-
-/// Load the system-wide config from `/usr/local/etc/lefthook.yaml` if it exists.
-pub fn load_system_config() -> Result<Option<Value>, String> {
-    match system_config() {
-        Some(path) => {
-            debug!("system config: {}", path.display());
-            read_yaml(&path).map(Some)
-        }
-        None => {
-            debug!("no system config file found");
             Ok(None)
         }
     }

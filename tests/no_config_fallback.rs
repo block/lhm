@@ -148,6 +148,66 @@ fn no_config_no_git_hook_still_succeeds() {
 }
 
 #[test]
+fn no_config_falls_back_in_linked_worktree() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("repo");
+    fs::create_dir_all(&repo).unwrap();
+    init_git_repo(&repo);
+
+    // Place a hook in the main repo's `.git/hooks/` (the common git dir).
+    let marker = tmp.path().join("hook-ran");
+    write_script(
+        &repo.join(".git/hooks/pre-commit"),
+        &format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+    );
+
+    // Create a linked worktree; inside it `.git` is a file, not a directory.
+    let worktree = tmp.path().join("wt");
+    let out = Command::new("git")
+        .args(["worktree", "add", "-b", "wt-branch"])
+        .arg(&worktree)
+        .current_dir(&repo)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git worktree add failed: {}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(
+        worktree.join(".git").is_file(),
+        "linked worktree's .git should be a file",
+    );
+
+    let fake_home = tmp.path().join("home");
+    fs::create_dir_all(&fake_home).unwrap();
+    let fake_bin = fake_lefthook_dir(tmp.path());
+    let binary = lhm_binary();
+
+    let output = Command::new(&binary)
+        .args(["run-hook", "pre-commit"])
+        .current_dir(&worktree)
+        .env("HOME", &fake_home)
+        .env("XDG_CONFIG_HOME", fake_home.join(".config"))
+        .env("PATH", build_path(&fake_bin))
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .expect("failed to run lhm");
+
+    assert!(
+        output.status.success(),
+        "lhm run-hook should succeed in worktree, stderr: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert!(
+        marker.exists(),
+        "hook should have been executed via common git dir from worktree. stderr: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+#[test]
 fn no_config_failing_git_hook_propagates_failure() {
     let tmp = tempfile::tempdir().unwrap();
     let repo = tmp.path().join("repo");

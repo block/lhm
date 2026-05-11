@@ -28,6 +28,7 @@ for repo configs), where `<ext>` is `yml`, `yaml`, `json`, `jsonc`, or `toml`.
 ### `lhm install`
 
 - Creates shell wrapper scripts for all standard git hooks in `~/.local/libexec/lhm/hooks/`, each invoking `lhm run-hook <hook>`
+- Marks each wrapper script as immutable (best-effort) so other tools that try to overwrite it fail loudly instead of silently replacing it. Uses `chflags(UF_IMMUTABLE)` on macOS/BSD and `chattr +i` semantics (`FS_IMMUTABLE_FL`) on Linux. macOS works for non-root user installs; Linux requires `CAP_LINUX_IMMUTABLE` (typically root) and is a silent no-op otherwise. Re-running `lhm install` clears and re-applies the flag.
 - Sets `git config --global core.hooksPath ~/.local/libexec/lhm/hooks`
 - Writes a default `~/.config/lefthook.yaml` if no user config exists
 

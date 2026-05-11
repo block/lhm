@@ -1,6 +1,7 @@
 mod adapters;
 mod config;
 mod hooks;
+mod immutable;
 mod merge;
 
 use clap::{Parser, Subcommand};

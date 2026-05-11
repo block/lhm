@@ -33,6 +33,9 @@ impl ConfigOverrides {
 pub const LEFTHOOK_EXTENSIONS: &[&str] = &["yml", "yaml", "json", "jsonc", "toml"];
 
 pub const DEFAULT_GLOBAL_CONFIG: &str = r#"# Global lefthook configuration
+# Lefthook's built-in LFS support runs `git lfs <hook>` on every repo (slow);
+# lhm's git-lfs adapter handles LFS only when the repo actually uses it.
+skip_lfs: true
 output:
   - success
   - failure

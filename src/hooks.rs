@@ -1,7 +1,9 @@
-use log::debug;
+use log::{debug, warn};
 use serde_yaml::Value;
 use std::fs;
 use std::path::Path;
+
+use crate::immutable::{clear_immutable, set_immutable};
 
 pub const GIT_HOOKS: &[&str] = &[
     "applypatch-msg",
@@ -59,13 +61,35 @@ pub fn create_hook_scripts(dir: &Path, binary: &Path) -> Result<(), String> {
 
     remove_stale_hooks(dir);
 
+    let mut immutable_failures = 0usize;
+    let mut last_immutable_err: Option<String> = None;
+
     for hook in GIT_HOOKS {
         let path = dir.join(hook);
+        if path.exists() {
+            // Best-effort: a previous lhm install may have set the immutable
+            // flag. Ignore errors here so a future-incompatible flag setting
+            // doesn't block reinstall; the subsequent remove/write will surface
+            // a real failure if the file truly can't be replaced.
+            let _ = clear_immutable(&path);
+        }
         let _ = fs::remove_file(&path);
         let content = hook_script(binary, hook);
         fs::write(&path, &content).map_err(|e| format!("failed to write {}: {e}", path.display()))?;
         set_executable(&path)?;
+        if let Err(e) = set_immutable(&path) {
+            immutable_failures += 1;
+            last_immutable_err = Some(e);
+        }
     }
+
+    if immutable_failures > 0 {
+        let err = last_immutable_err.unwrap_or_default();
+        warn!(
+            "could not mark {immutable_failures} hook script(s) immutable; other tools may silently overwrite them ({err})"
+        );
+    }
+
     Ok(())
 }
 
@@ -90,7 +114,9 @@ fn remove_stale_hooks(dir: &Path) {
         };
         if !GIT_HOOKS.contains(&name_str) {
             debug!("removing stale hook: {name_str}");
-            let _ = fs::remove_file(entry.path());
+            let path = entry.path();
+            let _ = clear_immutable(&path);
+            let _ = fs::remove_file(path);
         }
     }
 }
@@ -172,6 +198,14 @@ mod tests {
         assert!(content.contains("run-hook prepare-commit-msg"));
     }
 
+    /// Clear immutable flag from every hook in `dir` so the tempdir can be
+    /// cleaned up on drop. No-op on platforms where immutability isn't set.
+    fn clear_immutable_hooks(dir: &Path) {
+        for hook in GIT_HOOKS {
+            let _ = crate::immutable::clear_immutable(&dir.join(hook));
+        }
+    }
+
     #[test]
     fn test_create_hook_scripts() {
         let dir = tempfile::tempdir().unwrap();
@@ -198,6 +232,35 @@ mod tests {
                 assert_eq!(mode & 0o755, 0o755, "{hook} is executable");
             }
         }
+
+        clear_immutable_hooks(&hooks);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_create_hook_scripts_marks_files_immutable_on_macos() {
+        let dir = tempfile::tempdir().unwrap();
+        let hooks = dir.path().join("hooks");
+        let fake_binary = Path::new("/usr/local/bin/lhm");
+
+        create_hook_scripts(&hooks, fake_binary).unwrap();
+
+        let path = hooks.join("pre-commit");
+        assert!(
+            fs::write(&path, "clobber").is_err(),
+            "write to immutable hook should fail"
+        );
+        assert!(
+            fs::remove_file(&path).is_err(),
+            "unlinking an immutable hook should fail"
+        );
+
+        // Re-running install must succeed: it should clear immutability,
+        // rewrite, and re-set it.
+        create_hook_scripts(&hooks, fake_binary).unwrap();
+        assert!(fs::write(&path, "clobber").is_err(), "still immutable after reinstall");
+
+        clear_immutable_hooks(&hooks);
     }
 
     #[test]
@@ -213,6 +276,8 @@ mod tests {
 
         let content = fs::read_to_string(hooks.join("pre-commit")).unwrap();
         assert!(content.contains("run-hook pre-commit"), "overwritten: {content}");
+
+        clear_immutable_hooks(&hooks);
     }
 
     #[cfg(unix)]
@@ -246,6 +311,8 @@ mod tests {
             target_content, "original binary content",
             "symlink target not clobbered"
         );
+
+        clear_immutable_hooks(&hooks);
     }
 
     #[test]
@@ -268,6 +335,8 @@ mod tests {
         for hook in GIT_HOOKS {
             assert!(hooks.join(hook).is_file());
         }
+
+        clear_immutable_hooks(&hooks);
     }
 
     #[test]

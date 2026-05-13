@@ -162,11 +162,22 @@ fn install() -> ExitCode {
         Ok(s) if s.success() => {
             info!("installed hooks to {}", dir.display());
             info!("set core.hooksPath = {}", dir.display());
+            print_adapter_install_hints();
             ExitCode::SUCCESS
         }
         _ => {
             error!("failed to set core.hooksPath");
             ExitCode::FAILURE
+        }
+    }
+}
+
+/// Ask every known adapter for any one-time setup guidance it wants the user
+/// to see, and print each line through the standard logger.
+fn print_adapter_install_hints() {
+    for hint in adapters::install_hints() {
+        for line in hint.lines() {
+            info!("{line}");
         }
     }
 }
@@ -192,10 +203,41 @@ fn disable() -> ExitCode {
     }
 }
 
+/// Build the repo-fallback adapter config. Used in place of a missing
+/// `lefthook.yaml`. Picks the first detected `RepoFallback` adapter and
+/// returns its config for `hook_name` (or the merged config across all
+/// hooks when `hook_name` is `None`).
 fn adapter_config_for(root: &Path, hook_name: Option<&str>) -> Option<Value> {
-    let adapter = adapters::detect_adapter(root)?;
+    let adapter = adapters::detect_repo_fallback_adapter(root)?;
     debug!("detected adapter: {}", adapter.name());
+    config_for_adapter(adapter.as_ref(), root, hook_name)
+}
 
+/// Build the merged `Underlay`-layer config. Every detected `Underlay`
+/// adapter contributes; results are merged together. Returns `None` if no
+/// underlay adapter applies or none contributes anything for the request.
+fn underlay_config_for(root: &Path, hook_name: Option<&str>) -> Option<Value> {
+    let adapters = adapters::detect_underlay_adapters(root);
+    if adapters.is_empty() {
+        return None;
+    }
+
+    let mut combined: Option<Value> = None;
+    for adapter in &adapters {
+        debug!("detected underlay adapter: {}", adapter.name());
+        if let Some(config) = config_for_adapter(adapter.as_ref(), root, hook_name) {
+            combined = Some(match combined {
+                Some(existing) => merge_configs(existing, config),
+                None => config,
+            });
+        }
+    }
+    combined
+}
+
+/// Produce an `annotate_hooks`-decorated config for one adapter, either for a
+/// single hook or for the full `GIT_HOOKS` set when `hook_name` is `None`.
+fn config_for_adapter(adapter: &dyn adapters::Adapter, root: &Path, hook_name: Option<&str>) -> Option<Value> {
     if let Some(name) = hook_name {
         let config = adapter.generate_config(root, name);
         if config.is_none() {
@@ -216,7 +258,7 @@ fn adapter_config_for(root: &Path, hook_name: Option<&str>) -> Option<Value> {
     combined.map(annotate_hooks)
 }
 
-/// Merge an ordered list of config layers (user, repo/adapter).
+/// Merge an ordered list of config layers (underlay, user, repo/adapter).
 /// Later layers override earlier ones using `merge_configs`.
 fn merge_layers(layers: Vec<Value>) -> Option<Value> {
     layers.into_iter().reduce(merge_configs)
@@ -231,8 +273,10 @@ fn strip_no_tty(mut value: Value) -> Value {
     value
 }
 
-/// Resolve user-global, repo, and adapter sources into a single merged config.
+/// Resolve underlay-adapter, user-global, repo, and repo-fallback-adapter
+/// sources into a single merged config.
 fn resolve_config(
+    underlay: &Option<Value>,
     global: &Option<Value>,
     repo: &Option<PathBuf>,
     adapter_config: &Option<Value>,
@@ -244,7 +288,10 @@ fn resolve_config(
 
     let local = repo_val.or_else(|| adapter_config.clone());
 
-    let mut layers = Vec::with_capacity(2);
+    let mut layers = Vec::with_capacity(3);
+    if let Some(v) = underlay {
+        layers.push(v.clone());
+    }
     if let Some(v) = global {
         let v = if local.is_some() {
             strip_no_tty(v.clone())
@@ -277,12 +324,13 @@ fn dry_run(overrides: &ConfigOverrides) -> ExitCode {
     } else {
         None
     };
+    let underlay = root.as_deref().and_then(|r| underlay_config_for(r, None));
 
     if let Some(ref p) = repo {
         debug!("repo config: {}", p.display());
     }
 
-    match resolve_config(&global, &repo, &adapter_config) {
+    match resolve_config(&underlay, &global, &repo, &adapter_config) {
         Ok(Some(config)) => {
             print!("{}", serde_yaml::to_string(&config).unwrap_or_default());
             ExitCode::SUCCESS
@@ -299,13 +347,7 @@ fn dry_run(overrides: &ConfigOverrides) -> ExitCode {
 }
 
 fn lefthook_in_path() -> bool {
-    Command::new("lefthook")
-        .arg("--version")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok()
+    which::which("lefthook").is_ok()
 }
 
 /// Run the repo's `.git/hooks/<hook_name>` script directly.
@@ -323,6 +365,7 @@ fn run_git_hook(hook_name: &str, args: Vec<String>) -> ExitCode {
     debug!("running .git/hooks/{hook_name} directly (lefthook not in PATH)");
     let status = Command::new(&hook_path)
         .args(&args)
+        .env("LHM", "1")
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
@@ -362,8 +405,9 @@ fn run_hook(hook_name: &str, args: Vec<String>, overrides: &ConfigOverrides) -> 
     } else {
         None
     };
+    let underlay = root.as_deref().and_then(|r| underlay_config_for(r, Some(hook_name)));
 
-    let merged = match resolve_config(&global, &repo, &adapter_config) {
+    let merged = match resolve_config(&underlay, &global, &repo, &adapter_config) {
         Ok(Some(m)) => m,
         Ok(None) => {
             debug!("no config found, skipping hook");
@@ -392,6 +436,7 @@ fn run_hook(hook_name: &str, args: Vec<String>, overrides: &ConfigOverrides) -> 
         .arg("--no-auto-install")
         .args(&args)
         .env("LEFTHOOK_CONFIG", config_path)
+        .env("LHM", "1")
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
@@ -518,7 +563,9 @@ mod tests {
         fs::write(&repo_path, "pre-commit:\n  commands:\n    fmt:\n      run: repo-fmt\n").unwrap();
 
         let global = Some(yaml("pre-push:\n  commands:\n    usr-test:\n      run: usr-test\n"));
-        let result = resolve_config(&global, &Some(repo_path), &None).unwrap().unwrap();
+        let result = resolve_config(&None, &global, &Some(repo_path), &None)
+            .unwrap()
+            .unwrap();
         let out = to_yaml(&result);
         assert!(out.contains("usr-test"), "user layer present: {out}");
         assert!(out.contains("repo-fmt"), "repo layer present: {out}");
@@ -527,14 +574,14 @@ mod tests {
     #[test]
     fn test_resolve_config_global_only() {
         let global = Some(yaml("pre-push:\n  commands:\n    t:\n      run: usr\n"));
-        let result = resolve_config(&global, &None, &None).unwrap().unwrap();
+        let result = resolve_config(&None, &global, &None, &None).unwrap().unwrap();
         let out = to_yaml(&result);
         assert!(out.contains("usr"), "global-only config: {out}");
     }
 
     #[test]
     fn test_resolve_config_none() {
-        let result = resolve_config(&None, &None, &None).unwrap();
+        let result = resolve_config(&None, &None, &None, &None).unwrap();
         assert!(result.is_none());
     }
 
@@ -542,7 +589,7 @@ mod tests {
     fn test_resolve_config_adapter_used_when_no_repo() {
         let global = Some(yaml("pre-push:\n  commands:\n    t:\n      run: usr\n"));
         let adapter = Some(yaml("pre-commit:\n  commands:\n    fmt:\n      run: adapter-fmt\n"));
-        let result = resolve_config(&global, &None, &adapter).unwrap().unwrap();
+        let result = resolve_config(&None, &global, &None, &adapter).unwrap().unwrap();
         let out = to_yaml(&result);
         assert!(out.contains("usr"), "global preserved: {out}");
         assert!(out.contains("adapter-fmt"), "adapter used: {out}");
@@ -555,10 +602,56 @@ mod tests {
         fs::write(&repo_path, "pre-commit:\n  commands:\n    fmt:\n      run: repo-fmt\n").unwrap();
 
         let adapter = Some(yaml("pre-commit:\n  commands:\n    fmt:\n      run: adapter-fmt\n"));
-        let result = resolve_config(&None, &Some(repo_path), &adapter).unwrap().unwrap();
+        let result = resolve_config(&None, &None, &Some(repo_path), &adapter)
+            .unwrap()
+            .unwrap();
         let out = to_yaml(&result);
         assert!(out.contains("repo-fmt"), "repo wins over adapter: {out}");
         assert!(!out.contains("adapter-fmt"), "adapter ignored: {out}");
+    }
+
+    #[test]
+    fn test_resolve_config_underlay_then_global_then_repo() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo_path = dir.path().join("lefthook.yml");
+        fs::write(
+            &repo_path,
+            "pre-push:\n  commands:\n    extra:\n      run: repo-extra\n",
+        )
+        .unwrap();
+
+        let underlay = Some(yaml(
+            "pre-push:\n  commands:\n    git-lfs:\n      run: git lfs pre-push {0}\n",
+        ));
+        let global = Some(yaml("pre-push:\n  commands:\n    t:\n      run: usr\n"));
+        let result = resolve_config(&underlay, &global, &Some(repo_path), &None)
+            .unwrap()
+            .unwrap();
+        let out = to_yaml(&result);
+        assert!(out.contains("git lfs pre-push"), "underlay preserved: {out}");
+        assert!(out.contains("usr"), "global preserved: {out}");
+        assert!(out.contains("repo-extra"), "repo preserved: {out}");
+    }
+
+    #[test]
+    fn test_resolve_config_repo_overrides_underlay() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo_path = dir.path().join("lefthook.yml");
+        fs::write(
+            &repo_path,
+            "pre-push:\n  commands:\n    git-lfs:\n      run: custom-lfs\n",
+        )
+        .unwrap();
+
+        let underlay = Some(yaml(
+            "pre-push:\n  commands:\n    git-lfs:\n      run: git lfs pre-push {0}\n",
+        ));
+        let result = resolve_config(&underlay, &None, &Some(repo_path), &None)
+            .unwrap()
+            .unwrap();
+        let out = to_yaml(&result);
+        assert!(out.contains("custom-lfs"), "repo overrides underlay: {out}");
+        assert!(!out.contains("git lfs pre-push"), "underlay version replaced: {out}");
     }
 
     #[test]
@@ -568,7 +661,9 @@ mod tests {
         fs::write(&repo_path, "pre-commit:\n  commands:\n    fmt:\n      run: repo-fmt\n").unwrap();
 
         let global = Some(yaml("no_tty: true\npre-push:\n  commands:\n    t:\n      run: usr\n"));
-        let result = resolve_config(&global, &Some(repo_path), &None).unwrap().unwrap();
+        let result = resolve_config(&None, &global, &Some(repo_path), &None)
+            .unwrap()
+            .unwrap();
         let out = to_yaml(&result);
         assert!(!out.contains("no_tty"), "no_tty stripped from global: {out}");
         assert!(out.contains("usr"), "other keys preserved: {out}");
@@ -577,7 +672,7 @@ mod tests {
     #[test]
     fn test_resolve_config_keeps_no_tty_in_global_when_no_local() {
         let global = Some(yaml("no_tty: true\npre-push:\n  commands:\n    t:\n      run: usr\n"));
-        let result = resolve_config(&global, &None, &None).unwrap().unwrap();
+        let result = resolve_config(&None, &global, &None, &None).unwrap().unwrap();
         let out = to_yaml(&result);
         assert!(out.contains("no_tty: true"), "no_tty kept when no local: {out}");
     }
@@ -592,7 +687,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = resolve_config(&None, &Some(repo_path), &None).unwrap().unwrap();
+        let result = resolve_config(&None, &None, &Some(repo_path), &None).unwrap().unwrap();
         let out = to_yaml(&result);
         assert!(out.contains("no_tty: true"), "repo no_tty preserved: {out}");
     }

@@ -17,7 +17,7 @@ impl Adapter for PreCommitAdapter {
     }
 
     fn detect(&self, root: &Path) -> bool {
-        root.join(".pre-commit-config.yaml").is_file()
+        root.join(".pre-commit-config.yaml").is_file() && which::which("pre-commit").is_ok()
     }
 
     fn generate_config(&self, root: &Path, hook_name: &str) -> Option<Value> {
@@ -120,10 +120,30 @@ mod tests {
     // -- detection --
 
     #[test]
-    fn test_detect_with_config() {
+    fn test_detect_with_config_and_binary() {
+        let _stub = crate::adapters::test_support::StubBinary::create("pre-commit");
         let dir = tempfile::tempdir().unwrap();
         write_config(dir.path(), "repos: []\n");
         assert!(adapter().detect(dir.path()));
+    }
+
+    #[test]
+    fn test_detect_with_config_but_no_binary() {
+        // Config file is present but `pre-commit` isn't on PATH — the
+        // adapter must not claim the repo, otherwise execution would fail
+        // at runtime. Hold the PATH lock so no concurrent StubBinary test
+        // is racing us into a transient PATH that includes a stub.
+        let _path_lock = crate::adapters::test_support::PATH_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path(), "repos: []\n");
+        // Best-effort: rely on `pre-commit` not being on the test runner's
+        // PATH. If it ever is, this test becomes a no-op rather than a
+        // false failure.
+        if which::which("pre-commit").is_err() {
+            assert!(!adapter().detect(dir.path()));
+        }
     }
 
     #[test]

@@ -82,8 +82,8 @@ enum Commands {
     Install,
     /// Print the merged config that would be used, then exit
     DryRun,
-    /// Remove global core.hooksPath, disabling lhm
-    Disable,
+    /// Remove global core.hooksPath, uninstalling lhm
+    Uninstall,
     /// Run a git hook by name (used by hook wrapper scripts)
     RunHook {
         /// The git hook to run (e.g. pre-commit, pre-push)
@@ -111,7 +111,7 @@ fn main() -> ExitCode {
     match cli.command {
         Commands::Install => install(),
         Commands::DryRun => dry_run(&overrides),
-        Commands::Disable => disable(),
+        Commands::Uninstall => uninstall(),
         Commands::RunHook { hook, args } => {
             if !is_hook_name(&hook) {
                 error!("unknown hook: {hook}");
@@ -182,14 +182,14 @@ fn print_adapter_install_hints() {
     }
 }
 
-fn disable() -> ExitCode {
+fn uninstall() -> ExitCode {
     let status = Command::new("git")
         .args(["config", "--global", "--unset", "core.hooksPath"])
         .status();
 
     match status {
         Ok(s) if s.success() => {
-            info!("removed core.hooksPath, lhm disabled");
+            info!("removed core.hooksPath, lhm uninstalled");
             ExitCode::SUCCESS
         }
         Ok(s) if s.code() == Some(5) => {

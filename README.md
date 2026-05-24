@@ -32,9 +32,9 @@ for repo configs), where `<ext>` is `yml`, `yaml`, `json`, `jsonc`, or `toml`.
 - Sets `git config --global core.hooksPath ~/.local/libexec/lhm/hooks`
 - Writes a default `~/.config/lefthook.yaml` if no user config exists
 
-### `lhm disable`
+### `lhm uninstall`
 
-Unsets `git config --global core.hooksPath`, disabling lhm. The hook scripts in `~/.local/libexec/lhm/hooks/` are left in place so `lhm install` can re-enable quickly.
+Unsets `git config --global core.hooksPath`, uninstalling lhm. The hook scripts in `~/.local/libexec/lhm/hooks/` are left in place so `lhm install` can re-enable quickly.
 
 ### `lhm dry-run`
 

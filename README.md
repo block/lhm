@@ -36,6 +36,20 @@ for repo configs), where `<ext>` is `yml`, `yaml`, `json`, `jsonc`, or `toml`.
 
 Unsets `git config --global core.hooksPath`, uninstalling lhm. The hook scripts in `~/.local/libexec/lhm/hooks/` are left in place so `lhm install` can re-enable quickly.
 
+### `lhm disable` / `lhm enable`
+
+`lhm disable` suppresses **repo-specific** hooks (the repo's own `lefthook.yaml` and any repo-fallback adapter like pre-commit/husky/hooks-dir) for the current repo. The user-global config and underlay adapters (e.g. `git-lfs`) still run. `lhm enable` reverses it.
+
+The disabled set is keyed by the repo's `origin` remote URL and persisted in `~/.config/lhm.yaml`:
+
+```yaml
+disabled_repos:
+  - git@github.com:foo/bar.git
+  - https://github.com/baz/qux
+```
+
+Origin URLs are used verbatim — no normalization between `git@` and `https://` forms. If a repo has no `origin` remote, `lhm disable` errors out.
+
 ### `lhm dry-run`
 
 Prints the merged config that would be used for the current repo, then exits. Useful for verifying what hooks will run.

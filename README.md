@@ -58,6 +58,16 @@ Prints the merged config that would be used for the current repo, then exits. Us
 lhm dry-run
 ```
 
+### `lhm import`
+
+Writes the repo-fallback adapter's generated config to `.lefthook.yaml` in the current repo, so you can switch from `pre-commit`/`husky`/`hooks-dir` to a native lefthook config and edit it directly. Only the adapter output is written — the user-global config and underlay adapters are not included.
+
+Errors if a lefthook config already exists in the repo (any of `lefthook.<ext>`, `.lefthook.<ext>`, `.config/lefthook.<ext>`) or if no repo-fallback adapter is detected.
+
+```sh
+lhm import
+```
+
 ### Config overrides
 
 The global and local (repo) config paths can be overridden via CLI flags or environment variables. CLI flags are available on `dry-run`; env vars work everywhere, including during hook invocations.

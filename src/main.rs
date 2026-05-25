@@ -13,7 +13,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 
 use config::{
-    ConfigOverrides, install_default_global_config, load_global_config, read_yaml, repo_config, write_merged_temp,
+    ConfigOverrides, find_config, install_default_global_config, load_global_config, read_yaml, repo_config,
+    write_merged_temp,
 };
 use hooks::{GIT_HOOKS, annotate_hooks, create_hook_scripts, is_hook_name};
 use merge::merge_configs;
@@ -89,6 +90,10 @@ enum Commands {
     Disable,
     /// Re-enable repo-specific hooks for the current repo
     Enable,
+    /// Write the adapter-generated lefthook config to `.lefthook.yaml` in the
+    /// current repo. Errors if a lefthook config already exists or no adapter
+    /// is detected.
+    Import,
     /// Run a git hook by name (used by hook wrapper scripts)
     RunHook {
         /// The git hook to run (e.g. pre-commit, pre-push)
@@ -119,6 +124,7 @@ fn main() -> ExitCode {
         Commands::Uninstall => uninstall(),
         Commands::Disable => disable(),
         Commands::Enable => enable(),
+        Commands::Import => import(),
         Commands::RunHook { hook, args } => {
             if !is_hook_name(&hook) {
                 error!("unknown hook: {hook}");
@@ -251,6 +257,39 @@ fn disable() -> ExitCode {
 
 fn enable() -> ExitCode {
     mutate_disabled_repos("enable", |cfg, origin| cfg.enable(origin))
+}
+
+fn import() -> ExitCode {
+    let Some(root) = repo_root() else {
+        error!("not in a git repository");
+        return ExitCode::FAILURE;
+    };
+    match import_for_repo(&root) {
+        Ok(path) => {
+            info!("wrote {}", path.display());
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            error!("{e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Generate the repo-fallback adapter config for `root` and write it to
+/// `<root>/.lefthook.yaml`. Errors when a lefthook config already exists in
+/// the repo, when no `RepoFallback` adapter is detected, or on I/O failure.
+fn import_for_repo(root: &Path) -> Result<PathBuf, String> {
+    if let Some(existing) = find_config(root, true) {
+        return Err(format!("lefthook config already exists: {}", existing.display()));
+    }
+    let Some(config) = adapter_config_for(root, None) else {
+        return Err("no adapter detected for this repo; nothing to import".to_string());
+    };
+    let content = serde_yaml::to_string(&config).map_err(|e| format!("failed to serialize config: {e}"))?;
+    let path = root.join(".lefthook.yaml");
+    std::fs::write(&path, content).map_err(|e| format!("failed to write {}: {e}", path.display()))?;
+    Ok(path)
 }
 
 /// Build the repo-fallback adapter config. Used in place of a missing
@@ -776,5 +815,58 @@ mod tests {
         let val = yaml("output:\n  - success\n");
         let stripped = strip_no_tty(val.clone());
         assert_eq!(to_yaml(&stripped), to_yaml(&val));
+    }
+
+    #[test]
+    fn test_import_for_repo_writes_adapter_config() {
+        let dir = tempfile::tempdir().unwrap();
+        // hooks-dir adapter: `.hooks/` with an executable pre-commit script.
+        let hooks = dir.path().join(".hooks");
+        fs::create_dir_all(&hooks).unwrap();
+        write_test_script(&hooks.join("pre-commit"), "#!/bin/sh\nexit 0\n");
+
+        let written = import_for_repo(dir.path()).expect("import should succeed");
+        assert_eq!(written, dir.path().join(".lefthook.yaml"));
+
+        let content = fs::read_to_string(&written).unwrap();
+        assert!(content.contains("pre-commit:"), "hook present: {content}");
+        assert!(content.contains(".hooks/pre-commit"), "script path present: {content}");
+    }
+
+    #[test]
+    fn test_import_for_repo_errors_when_config_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let hooks = dir.path().join(".hooks");
+        fs::create_dir_all(&hooks).unwrap();
+        write_test_script(&hooks.join("pre-commit"), "#!/bin/sh\nexit 0\n");
+        let existing = dir.path().join("lefthook.yml");
+        fs::write(&existing, "pre-commit:\n").unwrap();
+
+        let err = import_for_repo(dir.path()).expect_err("should error when config exists");
+        assert!(err.contains("already exists"), "err mentions existence: {err}");
+        assert!(err.contains("lefthook.yml"), "err includes path: {err}");
+        assert!(
+            !dir.path().join(".lefthook.yaml").exists(),
+            ".lefthook.yaml not written"
+        );
+    }
+
+    #[test]
+    fn test_import_for_repo_errors_when_dotted_config_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let hooks = dir.path().join(".hooks");
+        fs::create_dir_all(&hooks).unwrap();
+        write_test_script(&hooks.join("pre-commit"), "#!/bin/sh\nexit 0\n");
+        fs::write(dir.path().join(".lefthook.yaml"), "pre-commit:\n").unwrap();
+
+        let err = import_for_repo(dir.path()).expect_err("should error when .lefthook.yaml exists");
+        assert!(err.contains("already exists"), "err mentions existence: {err}");
+    }
+
+    #[test]
+    fn test_import_for_repo_errors_when_no_adapter() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = import_for_repo(dir.path()).expect_err("should error when no adapter");
+        assert!(err.contains("no adapter"), "err mentions missing adapter: {err}");
     }
 }

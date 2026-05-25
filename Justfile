@@ -22,6 +22,14 @@ test:
 dev:
     @proctor
 
+# Bump version
+bump:
+    #!/bin/bash
+    test "$(svu current)" = "$(svu next)" && exit 0
+    echo "Tagging $(svu next)"
+    git tag "$(svu next)"
+    echo "Run 'git push && git push --tags' to push the tag"
+
 # Generate release notes from git log since previous tag
 release-notes tag="":
     #!/usr/bin/env bash

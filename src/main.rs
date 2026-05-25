@@ -2,6 +2,7 @@ mod adapters;
 mod config;
 mod hooks;
 mod immutable;
+mod lhm_config;
 mod merge;
 
 use clap::{Parser, Subcommand};
@@ -84,6 +85,10 @@ enum Commands {
     DryRun,
     /// Remove global core.hooksPath, uninstalling lhm
     Uninstall,
+    /// Disable repo-specific hooks for the current repo (keyed by git origin)
+    Disable,
+    /// Re-enable repo-specific hooks for the current repo
+    Enable,
     /// Run a git hook by name (used by hook wrapper scripts)
     RunHook {
         /// The git hook to run (e.g. pre-commit, pre-push)
@@ -112,6 +117,8 @@ fn main() -> ExitCode {
         Commands::Install => install(),
         Commands::DryRun => dry_run(&overrides),
         Commands::Uninstall => uninstall(),
+        Commands::Disable => disable(),
+        Commands::Enable => enable(),
         Commands::RunHook { hook, args } => {
             if !is_hook_name(&hook) {
                 error!("unknown hook: {hook}");
@@ -201,6 +208,49 @@ fn uninstall() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Common scaffolding for `disable`/`enable`: resolve the current repo's
+/// origin, load the lhm config, mutate it, and persist if changed.
+fn mutate_disabled_repos<F>(action: &str, mutate: F) -> ExitCode
+where
+    F: FnOnce(&mut lhm_config::LhmConfig, &str) -> bool,
+{
+    let Some(root) = repo_root() else {
+        error!("not in a git repository");
+        return ExitCode::FAILURE;
+    };
+    let Some(origin) = lhm_config::git_origin(&root) else {
+        error!("repo has no `origin` remote; cannot {action}");
+        return ExitCode::FAILURE;
+    };
+    let dir = config_dir();
+    let mut cfg = match lhm_config::load(&dir) {
+        Ok(c) => c,
+        Err(e) => {
+            error!("{e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let changed = mutate(&mut cfg, &origin);
+    if changed {
+        if let Err(e) = lhm_config::save(&dir, &cfg) {
+            error!("{e}");
+            return ExitCode::FAILURE;
+        }
+        info!("{action}d repo-specific hooks for {origin}");
+    } else {
+        info!("repo-specific hooks already {action}d for {origin}");
+    }
+    ExitCode::SUCCESS
+}
+
+fn disable() -> ExitCode {
+    mutate_disabled_repos("disable", |cfg, origin| cfg.disable(origin))
+}
+
+fn enable() -> ExitCode {
+    mutate_disabled_repos("enable", |cfg, origin| cfg.enable(origin))
 }
 
 /// Build the repo-fallback adapter config. Used in place of a missing
@@ -317,15 +367,25 @@ fn dry_run(overrides: &ConfigOverrides) -> ExitCode {
         }
     };
     let root = repo_root();
-    let repo = root.as_deref().and_then(|r| repo_config(r, overrides));
+    let disabled = root
+        .as_deref()
+        .is_some_and(|r| lhm_config::is_repo_disabled(&user_config_dir, r));
+    let repo = if disabled {
+        None
+    } else {
+        root.as_deref().and_then(|r| repo_config(r, overrides))
+    };
 
-    let adapter_config = if repo.is_none() {
+    let adapter_config = if !disabled && repo.is_none() {
         root.as_deref().and_then(|r| adapter_config_for(r, None))
     } else {
         None
     };
     let underlay = root.as_deref().and_then(|r| underlay_config_for(r, None));
 
+    if disabled {
+        debug!("repo-specific hooks disabled; using global + underlay only");
+    }
     if let Some(ref p) = repo {
         debug!("repo config: {}", p.display());
     }
@@ -395,12 +455,22 @@ fn run_hook(hook_name: &str, args: Vec<String>, overrides: &ConfigOverrides) -> 
         }
     };
     let root = repo_root();
-    let repo = root.as_deref().and_then(|r| repo_config(r, overrides));
+    let disabled = root
+        .as_deref()
+        .is_some_and(|r| lhm_config::is_repo_disabled(&user_config_dir, r));
+    let repo = if disabled {
+        None
+    } else {
+        root.as_deref().and_then(|r| repo_config(r, overrides))
+    };
 
     debug!("repo root: {:?}", root);
     debug!("repo config: {:?}", repo);
+    if disabled {
+        debug!("repo-specific hooks disabled; using global + underlay only");
+    }
 
-    let adapter_config = if repo.is_none() {
+    let adapter_config = if !disabled && repo.is_none() {
         root.as_deref().and_then(|r| adapter_config_for(r, Some(hook_name)))
     } else {
         None

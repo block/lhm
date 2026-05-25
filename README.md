@@ -50,6 +50,18 @@ disabled_repos:
 
 Origin URLs are used verbatim — no normalization between `git@` and `https://` forms. If a repo has no `origin` remote, `lhm disable` errors out.
 
+#### Local `core.hooksPath` overrides
+
+If a repo has a **local** `core.hooksPath` set (commonly by husky v9+, which sets it to `.husky/_`), git uses that path instead of the global `core.hooksPath` that `lhm install` configures — so lhm is bypassed entirely and `disable` has no effect on the hooks git actually runs.
+
+`lhm disable` warns when this is the case. Pass `--force` to also unset the repo-local `core.hooksPath`, so lhm becomes the active hook dispatcher:
+
+```sh
+lhm disable --force
+```
+
+`lhm dry-run` emits the same warning, since the merged config it prints is only informational when lhm isn't actually being invoked.
+
 ### `lhm dry-run`
 
 Prints the merged config that would be used for the current repo, then exits. Useful for verifying what hooks will run.
@@ -57,6 +69,8 @@ Prints the merged config that would be used for the current repo, then exits. Us
 ```sh
 lhm dry-run
 ```
+
+If the repo has a local `core.hooksPath` set, `dry-run` emits a warning: the printed config is informational only, since git will bypass lhm entirely. See [Local `core.hooksPath` overrides](#local-corehookspath-overrides).
 
 ### `lhm import`
 

@@ -657,6 +657,31 @@ mod tests {
         f.sync_all().unwrap();
     }
 
+    /// Run `cmd.status()`, retrying briefly on Linux's `ETXTBSY` ("Text file
+    /// busy"). The kernel rejects `execve()` when any process holds a
+    /// writable fd to the target file. Under `cargo test`'s parallelism, a
+    /// sibling test's `fork()`/`posix_spawn` can transiently inherit this
+    /// test's writable fd (between fork and the child's own `execve` closing
+    /// O_CLOEXEC fds), poisoning unrelated execs in a microsecond-wide window.
+    /// A short bounded retry sidesteps this without serializing tests.
+    fn status_retry_etxtbsy(cmd: &mut Command) -> std::io::Result<std::process::ExitStatus> {
+        use std::io::ErrorKind;
+        use std::thread::sleep;
+        use std::time::Duration;
+        let backoff_ms = [1u64, 2, 5, 10, 25, 50, 100, 200, 400];
+        let mut last_err: Option<std::io::Error> = None;
+        for delay in std::iter::once(0).chain(backoff_ms) {
+            if delay > 0 {
+                sleep(Duration::from_millis(delay));
+            }
+            match cmd.status() {
+                Err(e) if e.kind() == ErrorKind::ExecutableFileBusy => last_err = Some(e),
+                result => return result,
+            }
+        }
+        Err(last_err.expect("loop entered at least once"))
+    }
+
     fn yaml(s: &str) -> Value {
         serde_yaml::from_str(s).unwrap()
     }
@@ -673,7 +698,7 @@ mod tests {
         let hook = hooks.join("pre-commit");
         write_test_script(&hook, "#!/bin/sh\nexit 0\n");
 
-        let status = Command::new(&hook).status().expect("hook script should be executable");
+        let status = status_retry_etxtbsy(&mut Command::new(&hook)).expect("hook script should be executable");
         assert!(status.success());
     }
 
@@ -692,7 +717,7 @@ mod tests {
         let hook = hooks.join("pre-commit");
         write_test_script(&hook, "#!/bin/sh\nexit 1\n");
 
-        let status = Command::new(&hook).status().expect("hook script should be executable");
+        let status = status_retry_etxtbsy(&mut Command::new(&hook)).expect("hook script should be executable");
         assert!(!status.success());
     }
 

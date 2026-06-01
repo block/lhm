@@ -6,7 +6,7 @@ mod lhm_config;
 mod merge;
 
 use clap::{Parser, Subcommand};
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use serde_yaml::Value;
 use std::env;
 use std::path::{Path, PathBuf};
@@ -87,7 +87,12 @@ enum Commands {
     /// Remove global core.hooksPath, uninstalling lhm
     Uninstall,
     /// Disable repo-specific hooks for the current repo (keyed by git origin)
-    Disable,
+    Disable {
+        /// Also unset the repo's local `core.hooksPath` if set, so lhm is
+        /// actually invoked for hooks instead of being bypassed.
+        #[arg(long)]
+        force: bool,
+    },
     /// Re-enable repo-specific hooks for the current repo
     Enable,
     /// Write the adapter-generated lefthook config to `.lefthook.yaml` in the
@@ -122,7 +127,7 @@ fn main() -> ExitCode {
         Commands::Install => install(),
         Commands::DryRun => dry_run(&overrides),
         Commands::Uninstall => uninstall(),
-        Commands::Disable => disable(),
+        Commands::Disable { force } => disable(force),
         Commands::Enable => enable(),
         Commands::Import => import(),
         Commands::RunHook { hook, args } => {
@@ -148,6 +153,39 @@ fn repo_root() -> Option<PathBuf> {
         .ok()
         .filter(|o| o.status.success())
         .map(|o| PathBuf::from(String::from_utf8_lossy(&o.stdout).trim()))
+}
+
+/// Return the repo-local `core.hooksPath` value if set, else `None`.
+/// A local override silently bypasses lhm's global `core.hooksPath`, so this
+/// is used to warn the user when lhm isn't actually being invoked.
+fn local_hooks_path(root: &Path) -> Option<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["config", "--local", "--get", "core.hooksPath"])
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if s.is_empty() { None } else { Some(s) }
+}
+
+/// Unset the repo-local `core.hooksPath`. Idempotent: succeeds if the key is
+/// already absent (git exits 5 in that case).
+fn unset_local_hooks_path(root: &Path) -> Result<(), String> {
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["config", "--local", "--unset", "core.hooksPath"])
+        .status()
+        .map_err(|e| format!("failed to run git: {e}"))?;
+    match status.code() {
+        Some(0) | Some(5) => Ok(()),
+        code => Err(format!("git config --unset core.hooksPath failed (exit {code:?})")),
+    }
 }
 
 fn install() -> ExitCode {
@@ -251,8 +289,35 @@ where
     ExitCode::SUCCESS
 }
 
-fn disable() -> ExitCode {
-    mutate_disabled_repos("disable", |cfg, origin| cfg.disable(origin))
+fn disable(force: bool) -> ExitCode {
+    let result = mutate_disabled_repos("disable", |cfg, origin| cfg.disable(origin));
+    if result != ExitCode::SUCCESS {
+        return result;
+    }
+    let Some(root) = repo_root() else {
+        return result;
+    };
+    let Some(path) = local_hooks_path(&root) else {
+        return result;
+    };
+    if force {
+        match unset_local_hooks_path(&root) {
+            Ok(()) => {
+                info!("unset local core.hooksPath (was {path}); lhm will now be invoked for hooks");
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                error!("{e}");
+                ExitCode::FAILURE
+            }
+        }
+    } else {
+        warn!(
+            "this repo has a local core.hooksPath = {path}; lhm is being bypassed entirely, \
+             so `disable` has no effect on hooks. Re-run with --force to also unset it."
+        );
+        result
+    }
 }
 
 fn enable() -> ExitCode {
@@ -427,6 +492,14 @@ fn dry_run(overrides: &ConfigOverrides) -> ExitCode {
     }
     if let Some(ref p) = repo {
         debug!("repo config: {}", p.display());
+    }
+    if let Some(r) = root.as_deref()
+        && let Some(path) = local_hooks_path(r)
+    {
+        warn!(
+            "this repo has a local core.hooksPath = {path}; lhm is being bypassed entirely. \
+             The merged config below is informational only."
+        );
     }
 
     match resolve_config(&underlay, &global, &repo, &adapter_config) {
@@ -621,6 +694,66 @@ mod tests {
 
         let status = Command::new(&hook).status().expect("hook script should be executable");
         assert!(!status.success());
+    }
+
+    fn init_git_repo(dir: &Path) {
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["init", "-q"])
+            .status()
+            .expect("git init");
+        assert!(status.success());
+    }
+
+    fn set_local_hooks_path(dir: &Path, value: &str) {
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["config", "--local", "core.hooksPath", value])
+            .status()
+            .expect("git config");
+        assert!(status.success());
+    }
+
+    #[test]
+    fn test_local_hooks_path_none_when_unset() {
+        let dir = tempfile::tempdir().unwrap();
+        init_git_repo(dir.path());
+        assert!(local_hooks_path(dir.path()).is_none());
+    }
+
+    #[test]
+    fn test_local_hooks_path_returns_value_when_set() {
+        let dir = tempfile::tempdir().unwrap();
+        init_git_repo(dir.path());
+        set_local_hooks_path(dir.path(), ".husky/_");
+        assert_eq!(local_hooks_path(dir.path()).as_deref(), Some(".husky/_"));
+    }
+
+    #[test]
+    fn test_local_hooks_path_none_outside_repo() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(local_hooks_path(dir.path()).is_none());
+    }
+
+    #[test]
+    fn test_unset_local_hooks_path_removes_value() {
+        let dir = tempfile::tempdir().unwrap();
+        init_git_repo(dir.path());
+        set_local_hooks_path(dir.path(), ".husky/_");
+        assert!(local_hooks_path(dir.path()).is_some());
+
+        unset_local_hooks_path(dir.path()).unwrap();
+        assert!(local_hooks_path(dir.path()).is_none());
+    }
+
+    #[test]
+    fn test_unset_local_hooks_path_idempotent_when_unset() {
+        let dir = tempfile::tempdir().unwrap();
+        init_git_repo(dir.path());
+        // No core.hooksPath set: unset must still succeed.
+        unset_local_hooks_path(dir.path()).unwrap();
     }
 
     #[test]

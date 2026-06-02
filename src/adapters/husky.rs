@@ -6,7 +6,8 @@ use super::Adapter;
 /// Adapter for the [husky](https://typicode.github.io/husky/) hook manager.
 ///
 /// Detects a `.husky/` directory in the repo root and generates a lefthook
-/// command that executes `.husky/<hook>` if the corresponding script exists.
+/// command that runs `.husky/<hook>` via `sh -e`, mirroring husky v9's own
+/// runner so hook files without the executable bit still work.
 pub struct HuskyAdapter;
 
 impl Adapter for HuskyAdapter {
@@ -24,7 +25,7 @@ impl Adapter for HuskyAdapter {
             return None;
         }
 
-        let config = format!("{hook_name}:\n  commands:\n    husky:\n      run: .husky/{hook_name} {{0}}\n");
+        let config = format!("{hook_name}:\n  commands:\n    husky:\n      run: sh -e .husky/{hook_name} {{0}}\n");
         serde_yaml::from_str(&config).ok()
     }
 }
@@ -68,7 +69,29 @@ mod tests {
         let config = adapter().generate_config(dir.path(), "pre-commit").unwrap();
         let out = serde_yaml::to_string(&config).unwrap();
         assert!(out.contains("pre-commit:"), "has hook key: {out}");
-        assert!(out.contains(".husky/pre-commit {0}"), "forwards git args: {out}");
+        assert!(
+            out.contains("sh -e .husky/pre-commit {0}"),
+            "invokes via sh and forwards git args: {out}"
+        );
+    }
+
+    #[test]
+    fn test_generate_config_non_executable_hook() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let husky_dir = dir.path().join(".husky");
+        fs::create_dir_all(&husky_dir).unwrap();
+        let hook = husky_dir.join("post-checkout");
+        fs::write(&hook, "#!/bin/sh\necho hi\n").unwrap();
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o644)).unwrap();
+
+        let config = adapter().generate_config(dir.path(), "post-checkout").unwrap();
+        let out = serde_yaml::to_string(&config).unwrap();
+        assert!(
+            out.contains("sh -e .husky/post-checkout"),
+            "must invoke via sh so +x isn't required: {out}"
+        );
     }
 
     #[test]

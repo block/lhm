@@ -11,6 +11,13 @@ jobs:
   build:
     name: Build ${{ matrix.arch }}-${{ matrix.target-suffix }}
     runs-on: ${{ matrix.os }}
+    # Setting any permission switches the job from the repo-default token to
+    # an explicit list, so contents:read must be re-stated to keep checkout
+    # working. id-token + attestations are what attest-build-provenance needs.
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest]
@@ -38,6 +45,9 @@ jobs:
           mv "target/${TARGET}"/release/lhm "${TARGET_PATH}"
           bzip2 -f9 "${TARGET_PATH}"
           echo "TARGET_PATH=${TARGET_PATH}.bz2" >> "$GITHUB_OUTPUT"
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # ratchet:actions/attest-build-provenance@v2
+        with:
+          subject-path: ${{ steps.build.outputs.TARGET_PATH }}
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: lhm-${{ matrix.arch }}-${{ matrix.target-suffix }}
@@ -61,7 +71,9 @@ jobs:
       - run: just release-notes > release-notes.md
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - run: gh release create ${{ github.ref_name }} lhm-*.bz2 --notes-file release-notes.md --title ${{ github.ref_name }}
+      - name: Generate SHA256SUMS
+        run: sha256sum lhm-*.bz2 > SHA256SUMS
+      - run: gh release create ${{ github.ref_name }} lhm-*.bz2 SHA256SUMS --notes-file release-notes.md --title ${{ github.ref_name }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

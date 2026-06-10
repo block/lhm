@@ -45,9 +45,15 @@ const STDIN_HOOKS: &[&str] = &["pre-push", "post-rewrite"];
 
 /// Generate the content of a shell wrapper script that invokes `lhm run-hook`.
 /// The hook name is baked into the script, so renaming the file won't break dispatch.
+///
+/// `LHM_GLOBAL_CONFIG` / `LHM_LOCAL_CONFIG` are unset before exec so they cannot
+/// leak from the developer's shell into the hook invocation. They are intended
+/// as a `dry-run` convenience; honoring them during normal hook execution lets
+/// a hostile repo's `.envrc` (via direnv or similar) redirect lhm's config
+/// sources to attacker-controlled YAML that lefthook then runs.
 fn hook_script(binary: &Path, hook_name: &str) -> String {
     format!(
-        "#!/bin/sh\nexec \"{}\" run-hook {} \"$@\"\n",
+        "#!/bin/sh\nunset LHM_GLOBAL_CONFIG LHM_LOCAL_CONFIG\nexec \"{}\" run-hook {} \"$@\"\n",
         binary.display(),
         hook_name,
     )
@@ -188,7 +194,7 @@ mod tests {
         let content = hook_script(Path::new("/usr/local/bin/lhm"), "pre-commit");
         assert_eq!(
             content,
-            "#!/bin/sh\nexec \"/usr/local/bin/lhm\" run-hook pre-commit \"$@\"\n"
+            "#!/bin/sh\nunset LHM_GLOBAL_CONFIG LHM_LOCAL_CONFIG\nexec \"/usr/local/bin/lhm\" run-hook pre-commit \"$@\"\n"
         );
     }
 
@@ -196,6 +202,22 @@ mod tests {
     fn test_hook_script_embeds_hook_name_not_filename() {
         let content = hook_script(Path::new("/bin/lhm"), "prepare-commit-msg");
         assert!(content.contains("run-hook prepare-commit-msg"));
+    }
+
+    #[test]
+    fn test_hook_script_unsets_lhm_config_env_vars() {
+        // Closes the direnv attack: a hostile repo's .envrc cannot redirect
+        // the config lhm consumes during hook execution by exporting
+        // LHM_GLOBAL_CONFIG / LHM_LOCAL_CONFIG.
+        let content = hook_script(Path::new("/bin/lhm"), "pre-commit");
+        let unset_line = "unset LHM_GLOBAL_CONFIG LHM_LOCAL_CONFIG";
+        let exec_line = "exec \"/bin/lhm\"";
+        let unset_idx = content.find(unset_line).expect("unset line present");
+        let exec_idx = content.find(exec_line).expect("exec line present");
+        assert!(
+            unset_idx < exec_idx,
+            "unset must precede exec; content was: {content}"
+        );
     }
 
     /// Clear immutable flag from every hook in `dir` so the tempdir can be

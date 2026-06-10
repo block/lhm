@@ -127,8 +127,23 @@ pub fn load_global_config(dir: &Path, overrides: &ConfigOverrides) -> Result<Opt
     }
 }
 
+/// Maximum size of a config file lhm will parse. Defends against straight-up
+/// huge inputs (a hostile repo can ship arbitrarily large YAML); does NOT
+/// defeat alias-bomb expansion, which can blow up a sub-kilobyte source into
+/// gigabytes of parsed structure — the underlying parser (unsafe-libyaml)
+/// does not expose alias/depth limits today.
+pub const MAX_CONFIG_SIZE: usize = 1024 * 1024;
+
 pub fn read_yaml(path: &Path) -> Result<Value, String> {
     let content = fs::read_to_string(path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+    if content.len() > MAX_CONFIG_SIZE {
+        return Err(format!(
+            "config file {} exceeds {}-byte size limit ({} bytes)",
+            path.display(),
+            MAX_CONFIG_SIZE,
+            content.len()
+        ));
+    }
     serde_yaml::from_str(&content).map_err(|e| format!("failed to parse {}: {e}", path.display()))
 }
 
@@ -333,5 +348,34 @@ mod tests {
                 None => unsafe { env::remove_var(&self.key) },
             }
         }
+    }
+
+    #[test]
+    fn test_read_yaml_rejects_oversized_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("huge.yaml");
+        // One byte over the limit is enough to trigger the check; build the
+        // file as valid YAML padded with a long comment so a regression that
+        // moved the check after the parse would still surface.
+        let mut content = String::from("a: 1\n# ");
+        content.push_str(&"x".repeat(MAX_CONFIG_SIZE));
+        fs::write(&path, &content).unwrap();
+
+        let err = read_yaml(&path).unwrap_err();
+        assert!(err.contains("exceeds"), "error mentions size limit: {err}");
+        assert!(err.contains("byte"), "error mentions bytes: {err}");
+    }
+
+    #[test]
+    fn test_read_yaml_accepts_input_at_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("small.yaml");
+        // Exactly at the limit should still parse.
+        let mut content = String::from("a: 1\n");
+        content.push_str(&"# ".repeat((MAX_CONFIG_SIZE - content.len()) / 2));
+        assert!(content.len() <= MAX_CONFIG_SIZE);
+        fs::write(&path, &content).unwrap();
+
+        assert!(read_yaml(&path).is_ok());
     }
 }

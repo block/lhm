@@ -1,0 +1,14 @@
+# Pin cross-rs Docker images by digest, not by mutable `:0.2.5` tag. A
+# compromise of the cross-rs ghcr namespace or a tag-move on ghcr could
+# otherwise substitute the build image silently. Refresh these via Renovate
+# (which handles `@sha256:` pins for OCI registries).
+#
+# Resolved 2026-06-08 from `https://ghcr.io/v2/cross-rs/<target>/manifests/0.2.5`.
+# macOS targets (apple-darwin) intentionally omitted: cross's macos-latest
+# path uses native cargo, not Docker.
+
+[target.aarch64-unknown-linux-gnu]
+image = "ghcr.io/cross-rs/aarch64-unknown-linux-gnu@sha256:7f8308a8734d9fcd2ebbe9a3e4bdea74af293f0799d80c3cc341e340cda49a4c"
+
+[target.x86_64-unknown-linux-gnu]
+image = "ghcr.io/cross-rs/x86_64-unknown-linux-gnu@sha256:9e5b39c09874bc1816c675ed11afca2c2ed6cee0c4ed2b3c1d5763c346c9ae3f"

@@ -1,7 +1,11 @@
 on:
   push:
     tags:
-      - "v[0-9]+.[0-9]+.[0-9]+"
+      # GitHub Actions ref filters are glob patterns, not regex. The literal
+      # `+` quantifier in the previous filter was matched literally — so the
+      # filter only matched the tag `v+.+.+`. Use `*` for "one or more
+      # characters" and rely on the tag-protection ruleset to enforce shape.
+      - "v[0-9]*.[0-9]*.[0-9]*"
   workflow_dispatch:
 concurrency:
   group: ${{ github.workflow }}
@@ -73,9 +77,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Generate SHA256SUMS
         run: sha256sum lhm-*.bz2 > SHA256SUMS
-      - run: gh release create ${{ github.ref_name }} lhm-*.bz2 SHA256SUMS --notes-file release-notes.md --title ${{ github.ref_name }}
+      # Move ref_name through env so the value cannot be interpreted as
+      # shell syntax inside the run step, regardless of what a future tag
+      # name or workflow_dispatch ref might contain.
+      - run: gh release create "$TAG" lhm-*.bz2 SHA256SUMS --notes-file release-notes.md --title "$TAG"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
 
       - name: Generate token for tap release
         id: generate_token

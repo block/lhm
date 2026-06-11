@@ -22,6 +22,9 @@ impl Adapter for PreCommitAdapter {
 
     fn generate_config(&self, root: &Path, hook_name: &str) -> Option<Value> {
         let content = fs::read_to_string(root.join(".pre-commit-config.yaml")).ok()?;
+        if content.len() > crate::config::MAX_CONFIG_SIZE {
+            return None;
+        }
         let config: PreCommitConfig = serde_yaml::from_str(&content).ok()?;
 
         if !has_hooks_for_stage(&config, hook_name) {

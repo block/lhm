@@ -66,11 +66,11 @@ struct Cli {
     #[arg(long, global = true)]
     debug: bool,
 
-    /// Path to the global lefthook config (also via LHM_GLOBAL_CONFIG)
+    /// Path to the global lefthook config
     #[arg(long, global = true)]
     global_config: Option<PathBuf>,
 
-    /// Path to the local (repo) lefthook config (also via LHM_LOCAL_CONFIG)
+    /// Path to the local (repo) lefthook config
     #[arg(long, global = true)]
     local_config: Option<PathBuf>,
 
@@ -135,7 +135,6 @@ fn main() -> ExitCode {
                 error!("unknown hook: {hook}");
                 return ExitCode::FAILURE;
             }
-            let overrides = ConfigOverrides::from_env();
             run_hook(&hook, args, &overrides)
         }
     }

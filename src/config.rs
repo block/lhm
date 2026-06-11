@@ -1,14 +1,11 @@
 use log::{debug, info};
 use serde_yaml::Value;
-use std::env;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
 
-/// Overrides for the global and local (repo) config paths.
-/// CLI flags take precedence; env vars (`LHM_GLOBAL_CONFIG`, `LHM_LOCAL_CONFIG`)
-/// are used as fallback so that overrides work during hook invocations too.
+/// Overrides for the global and local (repo) config paths, sourced from CLI flags.
 #[derive(Debug, Clone, Default)]
 pub struct ConfigOverrides {
     pub global_config: Option<PathBuf>,
@@ -16,17 +13,12 @@ pub struct ConfigOverrides {
 }
 
 impl ConfigOverrides {
-    /// Build overrides from CLI flags, falling back to env vars.
+    /// Build overrides from CLI flags.
     pub fn new(global_flag: Option<PathBuf>, local_flag: Option<PathBuf>) -> Self {
         Self {
-            global_config: global_flag.or_else(|| env::var("LHM_GLOBAL_CONFIG").ok().map(PathBuf::from)),
-            local_config: local_flag.or_else(|| env::var("LHM_LOCAL_CONFIG").ok().map(PathBuf::from)),
+            global_config: global_flag,
+            local_config: local_flag,
         }
-    }
-
-    /// Build overrides from env vars only (used during hook invocations).
-    pub fn from_env() -> Self {
-        Self::new(None, None)
     }
 }
 
@@ -305,49 +297,13 @@ mod tests {
     }
 
     #[test]
-    fn test_overrides_from_env() {
-        let _guard1 = TempEnvVar::set("LHM_GLOBAL_CONFIG", "/tmp/g.yaml");
-        let _guard2 = TempEnvVar::set("LHM_LOCAL_CONFIG", "/tmp/l.yaml");
-
-        let o = ConfigOverrides::from_env();
-        assert_eq!(o.global_config, Some(PathBuf::from("/tmp/g.yaml")));
-        assert_eq!(o.local_config, Some(PathBuf::from("/tmp/l.yaml")));
-    }
-
-    #[test]
-    fn test_cli_flags_override_env_vars() {
-        let _guard = TempEnvVar::set("LHM_GLOBAL_CONFIG", "/tmp/env.yaml");
-
-        let o = ConfigOverrides::new(Some(PathBuf::from("/tmp/cli.yaml")), None);
-        assert_eq!(o.global_config, Some(PathBuf::from("/tmp/cli.yaml")));
-    }
-
-    /// RAII guard that sets an env var and restores the previous value on drop.
-    struct TempEnvVar {
-        key: String,
-        prev: Option<String>,
-    }
-
-    impl TempEnvVar {
-        fn set(key: &str, val: &str) -> Self {
-            let prev = env::var(key).ok();
-            // SAFETY: test-only, tests using this helper run sequentially
-            unsafe { env::set_var(key, val) };
-            Self {
-                key: key.to_string(),
-                prev,
-            }
-        }
-    }
-
-    impl Drop for TempEnvVar {
-        fn drop(&mut self) {
-            // SAFETY: test-only, restoring previous env state
-            match &self.prev {
-                Some(v) => unsafe { env::set_var(&self.key, v) },
-                None => unsafe { env::remove_var(&self.key) },
-            }
-        }
+    fn test_cli_flags_set_overrides() {
+        let o = ConfigOverrides::new(
+            Some(PathBuf::from("/tmp/cli-global.yaml")),
+            Some(PathBuf::from("/tmp/cli-local.yaml")),
+        );
+        assert_eq!(o.global_config, Some(PathBuf::from("/tmp/cli-global.yaml")));
+        assert_eq!(o.local_config, Some(PathBuf::from("/tmp/cli-local.yaml")));
     }
 
     #[test]

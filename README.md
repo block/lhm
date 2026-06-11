@@ -84,18 +84,17 @@ lhm import
 
 ### Config overrides
 
-The global and local (repo) config paths can be overridden via CLI flags or environment variables. CLI flags are available on `dry-run`; env vars work everywhere, including during hook invocations.
+The global and local (repo) config paths can be overridden via CLI flags.
 
-| Override | CLI flag | Environment variable |
-|----------|----------|---------------------|
-| Global config | `--global-config <path>` | `LHM_GLOBAL_CONFIG` |
-| Local config | `--local-config <path>` | `LHM_LOCAL_CONFIG` |
+| Override | CLI flag |
+|----------|----------|
+| Global config | `--global-config <path>` |
+| Local config | `--local-config <path>` |
 
-CLI flags take precedence over env vars. When set, the override path is used directly instead of searching for `lefthook.<ext>` files.
+When set, the override path is used directly instead of searching for `lefthook.<ext>` files.
 
 ```sh
 lhm --global-config ~/custom-global.yaml dry-run
-LHM_LOCAL_CONFIG=./other.yml git commit
 ```
 
 ### Hook execution

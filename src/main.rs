@@ -13,16 +13,23 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 
 use config::{
-    ConfigOverrides, find_config, install_default_global_config, load_global_config, read_yaml, repo_config,
-    write_merged_temp,
+    ConfigOverrides, find_config, install_default_user_config, load_system_configs, load_user_config, read_yaml,
+    repo_config, write_merged_temp,
 };
 use hooks::{GIT_HOOKS, annotate_hooks, create_hook_scripts, is_hook_name};
 use merge::merge_configs;
 
-fn init_logger(cli_debug: bool) {
-    let debug_enabled = cli_debug || env::var("LHM_DEBUG").is_ok_and(|v| v == "1" || v == "true");
+/// Separator between entries in `PATH`-style lists on this platform: `:` on
+/// Unix, `;` on Windows. Used to split `LHM_SYSTEM_CONFIG` / `--system-config`.
+#[cfg(windows)]
+const PATH_LIST_SEP: char = ';';
+#[cfg(not(windows))]
+const PATH_LIST_SEP: char = ':';
 
-    let level = if debug_enabled {
+fn init_logger(cli_debug: bool) {
+    // `LHM_DEBUG` is wired to `--debug` via clap's `env`, so `cli_debug`
+    // already reflects it.
+    let level = if cli_debug {
         log::LevelFilter::Debug
     } else {
         log::LevelFilter::Info
@@ -51,28 +58,53 @@ fn init_logger(cli_debug: bool) {
     name = "lhm",
     version,
     about = "\
-Merges global and per-repo lefthook configs.
+Merges system, user, and per-repo lefthook configs.
 
-When invoked as a git hook (via symlink), lhm finds the global config \
-(~/.lefthook.yaml) and repo config ($REPO/lefthook.yaml), merges them, \
-and runs lefthook. If neither config exists, falls back to \
-the adapter system.
+When invoked as a git hook, lhm merges the system configs \
+(/etc, /usr/local/etc), the user config (~/.config/lefthook.yaml), and the \
+repo config ($REPO/lefthook.yaml), then runs lefthook. If no config exists, \
+it falls back to the adapter system.
 
 Supported config names: lefthook.<ext>, .lefthook.<ext>, .config/lefthook.<ext>
 Supported extensions: yml, yaml, json, jsonc, toml"
 )]
 struct Cli {
-    /// Enable debug logging (also via LHM_DEBUG=1)
-    #[arg(long, global = true)]
+    /// Enable debug logging
+    // `num_args`/`default_missing_value` keep bare `--debug` working as a flag,
+    // while `BoolishValueParser` makes the `LHM_DEBUG` env var accept `1`/`true`
+    // (and `0`/`false`) rather than only clap's default `true`/`false`.
+    // `require_equals` stops a following subcommand being swallowed as the value.
+    #[arg(
+        long,
+        global = true,
+        env = "LHM_DEBUG",
+        num_args = 0..=1,
+        require_equals = true,
+        default_value_t = false,
+        default_missing_value = "true",
+        value_parser = clap::builder::BoolishValueParser::new(),
+    )]
     debug: bool,
 
-    /// Path to the global lefthook config
-    #[arg(long, global = true)]
-    global_config: Option<PathBuf>,
+    /// Path to the user lefthook config (bypasses the ~/.config search)
+    #[arg(long, global = true, env = "LHM_USER_CONFIG", alias = "global-config")]
+    user_config: Option<PathBuf>,
 
     /// Path to the local (repo) lefthook config
-    #[arg(long, global = true)]
+    #[arg(long, global = true, env = "LHM_LOCAL_CONFIG")]
     local_config: Option<PathBuf>,
+
+    /// Directories searched for system-wide lefthook configs, lowest priority
+    /// first. Repeatable; when given, replaces the /etc and /usr/local/etc
+    /// defaults.
+    #[arg(
+        long,
+        global = true,
+        env = "LHM_SYSTEM_CONFIG",
+        value_delimiter = PATH_LIST_SEP,
+        default_values = ["/etc", "/usr/local/etc"]
+    )]
+    system_config: Vec<PathBuf>,
 
     #[command(subcommand)]
     command: Commands,
@@ -122,7 +154,7 @@ fn config_dir() -> PathBuf {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     init_logger(cli.debug);
-    let overrides = ConfigOverrides::new(cli.global_config, cli.local_config);
+    let overrides = ConfigOverrides::new(cli.user_config, cli.local_config, cli.system_config);
     match cli.command {
         Commands::Install => install(),
         Commands::DryRun => dry_run(&overrides),
@@ -193,7 +225,7 @@ fn install() -> ExitCode {
     debug!("hooks dir: {}", dir.display());
     debug!("binary path: {}", binary.display());
 
-    if let Err(e) = install_default_global_config(&config_dir()) {
+    if let Err(e) = install_default_user_config(&config_dir()) {
         error!("{e}");
         return ExitCode::FAILURE;
     }
@@ -411,14 +443,14 @@ fn config_for_adapter(adapter: &dyn adapters::Adapter, root: &Path, hook_name: O
     combined.map(annotate_hooks)
 }
 
-/// Merge an ordered list of config layers (underlay, user, repo/adapter).
-/// Later layers override earlier ones using `merge_configs`.
+/// Merge an ordered list of config layers (underlay, system, user,
+/// repo/adapter). Later layers override earlier ones using `merge_configs`.
 fn merge_layers(layers: Vec<Value>) -> Option<Value> {
     layers.into_iter().reduce(merge_configs)
 }
 
-/// Remove `no_tty` from a config value so it cannot leak from a global layer
-/// into every repo. Repos that need it should set it themselves.
+/// Remove `no_tty` from a config value so it cannot leak from a system- or
+/// user-wide layer into every repo. Repos that need it should set it themselves.
 fn strip_no_tty(mut value: Value) -> Value {
     if let Value::Mapping(ref mut m) = value {
         m.remove("no_tty");
@@ -426,11 +458,27 @@ fn strip_no_tty(mut value: Value) -> Value {
     value
 }
 
-/// Resolve underlay-adapter, user-global, repo, and repo-fallback-adapter
-/// sources into a single merged config.
+/// Clone an above-repo layer (system or user), stripping `no_tty` when a local
+/// layer will override it in the merge.
+fn above_repo_layer(value: &Value, has_local: bool) -> Value {
+    if has_local {
+        strip_no_tty(value.clone())
+    } else {
+        value.clone()
+    }
+}
+
+/// Resolve the config layers into a single merged config.
+///
+/// Merge order, lowest priority first: the synthetic `underlay` adapter, then
+/// each `system` layer in turn, then the `user` layer, then the local layer
+/// (repo config, else repo-fallback `adapter_config`). `no_tty` is stripped
+/// from the system and user layers whenever a local layer is present, so a
+/// broad config can't force `no_tty` on every repo.
 fn resolve_config(
     underlay: &Option<Value>,
-    global: &Option<Value>,
+    system: &[Value],
+    user: &Option<Value>,
     repo: &Option<PathBuf>,
     adapter_config: &Option<Value>,
 ) -> Result<Option<Value>, String> {
@@ -440,18 +488,17 @@ fn resolve_config(
     };
 
     let local = repo_val.or_else(|| adapter_config.clone());
+    let has_local = local.is_some();
 
-    let mut layers = Vec::with_capacity(3);
+    let mut layers = Vec::with_capacity(3 + system.len());
     if let Some(v) = underlay {
         layers.push(v.clone());
     }
-    if let Some(v) = global {
-        let v = if local.is_some() {
-            strip_no_tty(v.clone())
-        } else {
-            v.clone()
-        };
-        layers.push(v);
+    for v in system {
+        layers.push(above_repo_layer(v, has_local));
+    }
+    if let Some(v) = user {
+        layers.push(above_repo_layer(v, has_local));
     }
     if let Some(v) = local {
         layers.push(v);
@@ -460,9 +507,21 @@ fn resolve_config(
     Ok(merge_layers(layers))
 }
 
+/// Load the two repo-independent layers shared by `dry_run` and `run_hook`:
+/// the user config (from `user_config_dir` or an override) and the system
+/// configs. Returned as `(user, system)`.
+fn load_shared_configs(
+    user_config_dir: &Path,
+    overrides: &ConfigOverrides,
+) -> Result<(Option<Value>, Vec<Value>), String> {
+    let user = load_user_config(user_config_dir, overrides)?;
+    let system = load_system_configs(overrides)?;
+    Ok((user, system))
+}
+
 fn dry_run(overrides: &ConfigOverrides) -> ExitCode {
     let user_config_dir = config_dir();
-    let global = match load_global_config(&user_config_dir, overrides) {
+    let (user, system) = match load_shared_configs(&user_config_dir, overrides) {
         Ok(v) => v,
         Err(e) => {
             error!("{e}");
@@ -487,7 +546,7 @@ fn dry_run(overrides: &ConfigOverrides) -> ExitCode {
     let underlay = root.as_deref().and_then(|r| underlay_config_for(r, None));
 
     if disabled {
-        debug!("repo-specific hooks disabled; using global + underlay only");
+        debug!("repo-specific hooks disabled; using system + user + underlay only");
     }
     if let Some(ref p) = repo {
         debug!("repo config: {}", p.display());
@@ -501,7 +560,7 @@ fn dry_run(overrides: &ConfigOverrides) -> ExitCode {
         );
     }
 
-    match resolve_config(&underlay, &global, &repo, &adapter_config) {
+    match resolve_config(&underlay, &system, &user, &repo, &adapter_config) {
         Ok(Some(config)) => {
             print!("{}", serde_yaml::to_string(&config).unwrap_or_default());
             ExitCode::SUCCESS
@@ -558,7 +617,7 @@ fn run_hook(hook_name: &str, args: Vec<String>, overrides: &ConfigOverrides) -> 
     }
 
     let user_config_dir = config_dir();
-    let global = match load_global_config(&user_config_dir, overrides) {
+    let (user, system) = match load_shared_configs(&user_config_dir, overrides) {
         Ok(v) => v,
         Err(e) => {
             error!("{e}");
@@ -578,7 +637,7 @@ fn run_hook(hook_name: &str, args: Vec<String>, overrides: &ConfigOverrides) -> 
     debug!("repo root: {:?}", root);
     debug!("repo config: {:?}", repo);
     if disabled {
-        debug!("repo-specific hooks disabled; using global + underlay only");
+        debug!("repo-specific hooks disabled; using system + user + underlay only");
     }
 
     let adapter_config = if !disabled && repo.is_none() {
@@ -588,7 +647,7 @@ fn run_hook(hook_name: &str, args: Vec<String>, overrides: &ConfigOverrides) -> 
     };
     let underlay = root.as_deref().and_then(|r| underlay_config_for(r, Some(hook_name)));
 
-    let merged = match resolve_config(&underlay, &global, &repo, &adapter_config) {
+    let merged = match resolve_config(&underlay, &system, &user, &repo, &adapter_config) {
         Ok(Some(m)) => m,
         Ok(None) => {
             debug!("no config found, skipping hook");
@@ -828,8 +887,8 @@ mod tests {
         let repo_path = dir.path().join("lefthook.yml");
         fs::write(&repo_path, "pre-commit:\n  commands:\n    fmt:\n      run: repo-fmt\n").unwrap();
 
-        let global = Some(yaml("pre-push:\n  commands:\n    usr-test:\n      run: usr-test\n"));
-        let result = resolve_config(&None, &global, &Some(repo_path), &None)
+        let user = Some(yaml("pre-push:\n  commands:\n    usr-test:\n      run: usr-test\n"));
+        let result = resolve_config(&None, &[], &user, &Some(repo_path), &None)
             .unwrap()
             .unwrap();
         let out = to_yaml(&result);
@@ -838,24 +897,24 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_config_global_only() {
-        let global = Some(yaml("pre-push:\n  commands:\n    t:\n      run: usr\n"));
-        let result = resolve_config(&None, &global, &None, &None).unwrap().unwrap();
+    fn test_resolve_config_user_only() {
+        let user = Some(yaml("pre-push:\n  commands:\n    t:\n      run: usr\n"));
+        let result = resolve_config(&None, &[], &user, &None, &None).unwrap().unwrap();
         let out = to_yaml(&result);
         assert!(out.contains("usr"), "global-only config: {out}");
     }
 
     #[test]
     fn test_resolve_config_none() {
-        let result = resolve_config(&None, &None, &None, &None).unwrap();
+        let result = resolve_config(&None, &[], &None, &None, &None).unwrap();
         assert!(result.is_none());
     }
 
     #[test]
     fn test_resolve_config_adapter_used_when_no_repo() {
-        let global = Some(yaml("pre-push:\n  commands:\n    t:\n      run: usr\n"));
+        let user = Some(yaml("pre-push:\n  commands:\n    t:\n      run: usr\n"));
         let adapter = Some(yaml("pre-commit:\n  commands:\n    fmt:\n      run: adapter-fmt\n"));
-        let result = resolve_config(&None, &global, &None, &adapter).unwrap().unwrap();
+        let result = resolve_config(&None, &[], &user, &None, &adapter).unwrap().unwrap();
         let out = to_yaml(&result);
         assert!(out.contains("usr"), "global preserved: {out}");
         assert!(out.contains("adapter-fmt"), "adapter used: {out}");
@@ -868,7 +927,7 @@ mod tests {
         fs::write(&repo_path, "pre-commit:\n  commands:\n    fmt:\n      run: repo-fmt\n").unwrap();
 
         let adapter = Some(yaml("pre-commit:\n  commands:\n    fmt:\n      run: adapter-fmt\n"));
-        let result = resolve_config(&None, &None, &Some(repo_path), &adapter)
+        let result = resolve_config(&None, &[], &None, &Some(repo_path), &adapter)
             .unwrap()
             .unwrap();
         let out = to_yaml(&result);
@@ -877,7 +936,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_config_underlay_then_global_then_repo() {
+    fn test_resolve_config_underlay_then_user_then_repo() {
         let dir = tempfile::tempdir().unwrap();
         let repo_path = dir.path().join("lefthook.yml");
         fs::write(
@@ -889,8 +948,8 @@ mod tests {
         let underlay = Some(yaml(
             "pre-push:\n  commands:\n    git-lfs:\n      run: git lfs pre-push {0}\n",
         ));
-        let global = Some(yaml("pre-push:\n  commands:\n    t:\n      run: usr\n"));
-        let result = resolve_config(&underlay, &global, &Some(repo_path), &None)
+        let user = Some(yaml("pre-push:\n  commands:\n    t:\n      run: usr\n"));
+        let result = resolve_config(&underlay, &[], &user, &Some(repo_path), &None)
             .unwrap()
             .unwrap();
         let out = to_yaml(&result);
@@ -912,7 +971,7 @@ mod tests {
         let underlay = Some(yaml(
             "pre-push:\n  commands:\n    git-lfs:\n      run: git lfs pre-push {0}\n",
         ));
-        let result = resolve_config(&underlay, &None, &Some(repo_path), &None)
+        let result = resolve_config(&underlay, &[], &None, &Some(repo_path), &None)
             .unwrap()
             .unwrap();
         let out = to_yaml(&result);
@@ -921,13 +980,13 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_config_strips_no_tty_from_global_when_local_present() {
+    fn test_resolve_config_strips_no_tty_from_user_when_local_present() {
         let dir = tempfile::tempdir().unwrap();
         let repo_path = dir.path().join("lefthook.yml");
         fs::write(&repo_path, "pre-commit:\n  commands:\n    fmt:\n      run: repo-fmt\n").unwrap();
 
-        let global = Some(yaml("no_tty: true\npre-push:\n  commands:\n    t:\n      run: usr\n"));
-        let result = resolve_config(&None, &global, &Some(repo_path), &None)
+        let user = Some(yaml("no_tty: true\npre-push:\n  commands:\n    t:\n      run: usr\n"));
+        let result = resolve_config(&None, &[], &user, &Some(repo_path), &None)
             .unwrap()
             .unwrap();
         let out = to_yaml(&result);
@@ -936,9 +995,9 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_config_keeps_no_tty_in_global_when_no_local() {
-        let global = Some(yaml("no_tty: true\npre-push:\n  commands:\n    t:\n      run: usr\n"));
-        let result = resolve_config(&None, &global, &None, &None).unwrap().unwrap();
+    fn test_resolve_config_keeps_no_tty_in_user_when_no_local() {
+        let user = Some(yaml("no_tty: true\npre-push:\n  commands:\n    t:\n      run: usr\n"));
+        let result = resolve_config(&None, &[], &user, &None, &None).unwrap().unwrap();
         let out = to_yaml(&result);
         assert!(out.contains("no_tty: true"), "no_tty kept when no local: {out}");
     }
@@ -953,9 +1012,100 @@ mod tests {
         )
         .unwrap();
 
-        let result = resolve_config(&None, &None, &Some(repo_path), &None).unwrap().unwrap();
+        let result = resolve_config(&None, &[], &None, &Some(repo_path), &None)
+            .unwrap()
+            .unwrap();
         let out = to_yaml(&result);
         assert!(out.contains("no_tty: true"), "repo no_tty preserved: {out}");
+    }
+
+    #[test]
+    fn test_resolve_config_layer_precedence() {
+        // Each layer contributes a distinct command (proving all are merged)
+        // plus a shared command (proving the highest layer wins). Order,
+        // lowest to highest: underlay < system < user < repo.
+        let dir = tempfile::tempdir().unwrap();
+        let repo_path = dir.path().join("lefthook.yml");
+        fs::write(
+            &repo_path,
+            "pre-push:\n  commands:\n    cmd-local:\n      run: x\n    shared:\n      run: from-local\n",
+        )
+        .unwrap();
+
+        let underlay = Some(yaml(
+            "pre-push:\n  commands:\n    cmd-lfs:\n      run: x\n    shared:\n      run: from-lfs\n",
+        ));
+        let system = vec![yaml(
+            "pre-push:\n  commands:\n    cmd-etc:\n      run: x\n    shared:\n      run: from-etc\n",
+        )];
+        let user = Some(yaml(
+            "pre-push:\n  commands:\n    cmd-home:\n      run: x\n    shared:\n      run: from-home\n",
+        ));
+
+        let result = resolve_config(&underlay, &system, &user, &Some(repo_path), &None)
+            .unwrap()
+            .unwrap();
+        let out = to_yaml(&result);
+        // Every layer's distinct command survives the merge.
+        for cmd in ["cmd-lfs", "cmd-etc", "cmd-home", "cmd-local"] {
+            assert!(out.contains(cmd), "{cmd} merged in: {out}");
+        }
+        // The shared command resolves to the highest layer (repo).
+        assert!(out.contains("from-local"), "repo wins shared: {out}");
+        for loser in ["from-lfs", "from-etc", "from-home"] {
+            assert!(!out.contains(loser), "{loser} overridden: {out}");
+        }
+    }
+
+    #[test]
+    fn test_resolve_config_later_system_dir_overrides_earlier() {
+        // system[] is ordered lowest priority first, so the second entry
+        // (/usr/local/etc) overrides the first (/etc).
+        let system = vec![
+            yaml("pre-push:\n  commands:\n    t:\n      run: from-etc\n"),
+            yaml("pre-push:\n  commands:\n    t:\n      run: from-usr-local\n"),
+        ];
+        let result = resolve_config(&None, &system, &None, &None, &None).unwrap().unwrap();
+        let out = to_yaml(&result);
+        assert!(out.contains("from-usr-local"), "later system dir wins: {out}");
+        assert!(!out.contains("from-etc"), "earlier system dir overridden: {out}");
+    }
+
+    #[test]
+    fn test_resolve_config_system_overrides_underlay() {
+        // The synthetic underlay stays the lowest layer, so an authored system
+        // config overrides it.
+        let underlay = Some(yaml("pre-push:\n  commands:\n    t:\n      run: from-underlay\n"));
+        let system = vec![yaml("pre-push:\n  commands:\n    t:\n      run: from-system\n")];
+        let result = resolve_config(&underlay, &system, &None, &None, &None)
+            .unwrap()
+            .unwrap();
+        let out = to_yaml(&result);
+        assert!(out.contains("from-system"), "system overrides underlay: {out}");
+        assert!(!out.contains("from-underlay"), "underlay overridden by system: {out}");
+    }
+
+    #[test]
+    fn test_resolve_config_strips_no_tty_from_system_when_local_present() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo_path = dir.path().join("lefthook.yml");
+        fs::write(&repo_path, "pre-commit:\n  commands:\n    fmt:\n      run: repo-fmt\n").unwrap();
+
+        let system = vec![yaml("no_tty: true\npre-push:\n  commands:\n    t:\n      run: sys\n")];
+        let result = resolve_config(&None, &system, &None, &Some(repo_path), &None)
+            .unwrap()
+            .unwrap();
+        let out = to_yaml(&result);
+        assert!(!out.contains("no_tty"), "no_tty stripped from system: {out}");
+        assert!(out.contains("sys"), "other system keys preserved: {out}");
+    }
+
+    #[test]
+    fn test_resolve_config_keeps_no_tty_in_system_when_no_local() {
+        let system = vec![yaml("no_tty: true\npre-push:\n  commands:\n    t:\n      run: sys\n")];
+        let result = resolve_config(&None, &system, &None, &None, &None).unwrap().unwrap();
+        let out = to_yaml(&result);
+        assert!(out.contains("no_tty: true"), "no_tty kept when no local: {out}");
     }
 
     #[test]

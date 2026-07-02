@@ -16,8 +16,8 @@ curl -fsSL https://raw.githubusercontent.com/block/lefthookmerge/main/install.sh
 
 ## Overview
 
-This tool is designed to merge global lefthook config with per repo config. `lhm install` configures global
-`core.hooksPath` to call `lhm` which dynamically merges the global and repo lefthook configs, if they exist,
+This tool is designed to merge system-wide, user, and per-repo lefthook configs. `lhm install` configures global
+`core.hooksPath` to call `lhm`, which dynamically merges whichever of the system, user, and repo lefthook configs exist,
 using lefthooks' `extends` [mechanism](https://lefthook.dev/configuration/extends.html).
 
 All standard lefthook config file names are supported: `lefthook.<ext>`, `.lefthook.<ext>` (and `.config/lefthook.<ext>`
@@ -28,7 +28,7 @@ for repo configs), where `<ext>` is `yml`, `yaml`, `json`, `jsonc`, or `toml`.
 ### `lhm install`
 
 - Creates shell wrapper scripts for all standard git hooks in `~/.local/libexec/lhm/hooks/`, each invoking `lhm run-hook <hook>`
-- Marks each wrapper script as immutable (best-effort) so other tools that try to overwrite it fail loudly instead of silently replacing it. Uses `chflags(UF_IMMUTABLE)` on macOS/BSD and `chattr +i` semantics (`FS_IMMUTABLE_FL`) on Linux. macOS works for non-root user installs; Linux requires `CAP_LINUX_IMMUTABLE` (typically root) and is a silent no-op otherwise. Re-running `lhm install` clears and re-applies the flag.
+- Marks each wrapper script as immutable (best-effort) so other tools that try to overwrite it fail loudly instead of silently replacing it. Uses `chflags(UF_IMMUTABLE)` on macOS/BSD and `chattr +i` semantics (`FS_IMMUTABLE_FL`) on Linux. macOS works for non-root user installs; Linux requires `CAP_LINUX_IMMUTABLE` (typically root), and without it lhm prints a warning that the scripts couldn't be marked immutable. Re-running `lhm install` clears and re-applies the flag.
 - Sets `git config --global core.hooksPath ~/.local/libexec/lhm/hooks`
 - Writes a default `~/.config/lefthook.yaml` if no user config exists
 
@@ -38,7 +38,7 @@ Unsets `git config --global core.hooksPath`, uninstalling lhm. The hook scripts 
 
 ### `lhm disable` / `lhm enable`
 
-`lhm disable` suppresses **repo-specific** hooks (the repo's own `lefthook.yaml` and any repo-fallback adapter like pre-commit/husky/hooks-dir) for the current repo. The user-global config and underlay adapters (e.g. `git-lfs`) still run. `lhm enable` reverses it.
+`lhm disable` suppresses **repo-specific** hooks (the repo's own `lefthook.yaml` and any repo-fallback adapter like pre-commit/husky/hooks-dir) for the current repo. The system and user configs and underlay adapters (e.g. `git-lfs`) still run. `lhm enable` reverses it.
 
 The disabled set is keyed by the repo's `origin` remote URL and persisted in `~/.config/lhm.yaml`:
 
@@ -74,7 +74,7 @@ If the repo has a local `core.hooksPath` set, `dry-run` emits a warning: the pri
 
 ### `lhm import`
 
-Writes the repo-fallback adapter's generated config to `.lefthook.yaml` in the current repo, so you can switch from `pre-commit`/`husky`/`hooks-dir` to a native lefthook config and edit it directly. Only the adapter output is written — the user-global config and underlay adapters are not included.
+Writes the repo-fallback adapter's generated config to `.lefthook.yaml` in the current repo, so you can switch from `pre-commit`/`husky`/`hooks-dir` to a native lefthook config and edit it directly. Only the adapter output is written — the system configs, user config, and underlay adapters are not included.
 
 Errors if a lefthook config already exists in the repo (any of `lefthook.<ext>`, `.lefthook.<ext>`, `.config/lefthook.<ext>`) or if no repo-fallback adapter is detected.
 
@@ -84,17 +84,23 @@ lhm import
 
 ### Config overrides
 
-The global and local (repo) config paths can be overridden via CLI flags.
+Config locations can be overridden via CLI flags or environment variables. Precedence is CLI flag > environment variable > default. Environment variables apply everywhere, including during git-triggered hook runs (CLI flags are only present when you invoke `lhm` directly).
 
-| Override | CLI flag |
-|----------|----------|
-| Global config | `--global-config <path>` |
-| Local config | `--local-config <path>` |
+| Override | CLI flag | Environment variable |
+|----------|----------|---------------------|
+| User config | `--user-config <path>` | `LHM_USER_CONFIG` |
+| Local (repo) config | `--local-config <path>` | `LHM_LOCAL_CONFIG` |
+| System config dirs | `--system-config <dir>` | `LHM_SYSTEM_CONFIG` |
+| Debug logging | `--debug` | `LHM_DEBUG` |
 
-When set, the override path is used directly instead of searching for `lefthook.<ext>` files.
+For `--user-config` / `--local-config`, the override path is used directly instead of searching for `lefthook.<ext>` files. `--global-config` is accepted as a deprecated alias for `--user-config`.
+
+`--system-config` takes **directories** (each searched for a standard `lefthook.<ext>` name), is repeatable, and is ordered lowest priority first; when given it replaces the `/etc` and `/usr/local/etc` defaults. `LHM_SYSTEM_CONFIG` accepts multiple directories separated by the platform's `PATH` separator (`:` on Unix).
 
 ```sh
-lhm --global-config ~/custom-global.yaml dry-run
+lhm --user-config ~/custom-user.yaml dry-run
+LHM_LOCAL_CONFIG=./other.yml git commit
+lhm --system-config /etc --system-config /opt/etc dry-run
 ```
 
 ### Hook execution
@@ -102,25 +108,26 @@ lhm --global-config ~/custom-global.yaml dry-run
 When git triggers a hook, it runs the wrapper script in the hooks directory. Each script calls `lhm run-hook <hook>`, where the hook name is baked into the script content — making it immune to filename renaming by other tools that inject themselves into `core.hooksPath`.
 
 0. **lefthook not in PATH**: falls back to executing `.git/hooks/<hook>` directly (if it exists), bypassing all config merging
-1. **No config at all** (no underlay adapter, no global, no repo, no repo-fallback adapter): hook is skipped silently
-2. **Configs exist**: merges all available layers in order (underlay, global, repo/adapter), runs `lefthook run <hook>` with `LEFTHOOK_CONFIG` pointing to the merged temp file
+1. **No config at all** (no underlay adapter, no system, no user, no repo, no repo-fallback adapter): hook is skipped silently
+2. **Configs exist**: merges all available layers in order (underlay, system, user, repo/adapter), runs `lefthook run <hook> --no-auto-install` (so lefthook never tries to reinstall its own hooks into lhm's hooks dir) with `LEFTHOOK_CONFIG` pointing to the merged temp file
 
-Config is resolved as a three-layer merge, where later layers override earlier ones:
+Config is resolved as a layered merge, where later layers override earlier ones:
 
 1. **Underlay adapters** — always-on baselines for tools that need their hooks to run regardless of the repo's own configuration (e.g. `git-lfs`). See *Adapters* below.
-2. **User global** (`~/.config/lefthook.yaml`) — per-user defaults
-3. **Repo** (`$REPO/lefthook.yaml` or repo-fallback adapter) — per-repo overrides
+2. **System** (`/etc/lefthook.<ext>`, then `/usr/local/etc/lefthook.<ext>`) — machine-wide defaults. The directories searched are configurable; see [Config overrides](#config-overrides).
+3. **User** (`~/.config/lefthook.yaml`) — per-user defaults
+4. **Repo** (`$REPO/lefthook.yaml` or repo-fallback adapter) — per-repo overrides
 
 Any layer may be absent. When a repo has no lefthook config, the repo-fallback adapter system is used in its place (see below).
 
-When a repo or adapter config is present, the `no_tty` setting is automatically stripped from the user-global config before merging. This prevents a global config from disabling TTY for all repos — each repo should opt into `no_tty` explicitly. When there is no local layer, `no_tty` is kept so it still takes effect for global-only setups.
+When a repo or adapter config is present, the `no_tty` setting is automatically stripped from the system and user layers before merging. This prevents a machine- or user-wide config from disabling TTY for all repos — each repo should opt into `no_tty` explicitly. When there is no local layer, `no_tty` is kept so it still takes effect for system/user-only setups.
 
 ### Adapters
 
 lhm has two categories of adapters:
 
 - **Repo-fallback adapters** stand in for a missing `lefthook.yaml`. Only the first detected one is used.
-- **Underlay adapters** detect always-on tools and merge into a low-priority layer beneath the user-global config, so the user or repo can still override anything they generate.
+- **Underlay adapters** detect always-on tools and merge into the lowest-priority layer, beneath the system, user, and repo configs, so any of them can still override anything they generate.
 
 #### Repo-fallback adapters
 
@@ -131,8 +138,8 @@ Tried in this order (first match wins):
 | Adapter | Detects | Behavior |
 |---------|---------|----------|
 | **pre-commit** | `.pre-commit-config.yaml` **and** `pre-commit` in `PATH` | Parses config to determine which stages have hooks, then delegates to `pre-commit run --hook-stage <stage>`. All hook types (local and remote) are supported. When no `stages` or `default_stages` is set, defaults to the `pre-commit` stage. If `pre-commit` isn't installed, the adapter declines and lhm falls through to the next adapter. |
-| **husky** | `.husky/` directory | Runs `.husky/<hook>` (if script exists) |
-| **hooks-dir** | `.hooks/` or `git-hooks/` directory | Runs `<dir>/<hook>` (if script exists and is executable) and all `<dir>/<hook>-*` prefixed executable scripts as parallel lefthook commands. Non-executable files are silently ignored. Checked in order (first match wins). `.git/hooks/` is intentionally excluded to avoid double-executing hooks already handled by dedicated adapters or lhm itself. |
+| **husky** | `.husky/` directory | Runs `.husky/<hook>` via `sh -e` (if script exists), mirroring husky v9 so non-executable hook files still run |
+| **hooks-dir** | `.hooks/` or `git-hooks/` directory | Runs `<dir>/<hook>` (if script exists and is executable) and all `<dir>/<hook>-*` prefixed executable scripts as separate lefthook commands. Non-executable files are silently ignored. Checked in order (first match wins). `.git/hooks/` is intentionally excluded to avoid double-executing hooks already handled by dedicated adapters or lhm itself. |
 
 For the `husky` and `hooks-dir` adapters, git's hook arguments (e.g. `<remote-name> <remote-url>` for `pre-push`, the message file path for `commit-msg`) are forwarded to the script via lefthook's `{0}` template, so scripts receive them positionally just as git would deliver. The `pre-commit` adapter does not forward positional args because `pre-commit run --hook-stage` does not consume them.
 

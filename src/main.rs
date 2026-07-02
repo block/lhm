@@ -1,5 +1,6 @@
 mod adapters;
 mod config;
+mod git;
 mod hooks;
 mod immutable;
 mod lhm_config;
@@ -177,7 +178,7 @@ fn home_dir() -> PathBuf {
 }
 
 fn repo_root() -> Option<PathBuf> {
-    Command::new("git")
+    crate::git::command()
         .args(["rev-parse", "--show-toplevel"])
         .stderr(Stdio::null())
         .output()
@@ -190,7 +191,7 @@ fn repo_root() -> Option<PathBuf> {
 /// A local override silently bypasses lhm's global `core.hooksPath`, so this
 /// is used to warn the user when lhm isn't actually being invoked.
 fn local_hooks_path(root: &Path) -> Option<String> {
-    let output = Command::new("git")
+    let output = crate::git::command()
         .arg("-C")
         .arg(root)
         .args(["config", "--local", "--get", "core.hooksPath"])
@@ -207,7 +208,7 @@ fn local_hooks_path(root: &Path) -> Option<String> {
 /// Unset the repo-local `core.hooksPath`. Idempotent: succeeds if the key is
 /// already absent (git exits 5 in that case).
 fn unset_local_hooks_path(root: &Path) -> Result<(), String> {
-    let status = Command::new("git")
+    let status = crate::git::command()
         .arg("-C")
         .arg(root)
         .args(["config", "--local", "--unset", "core.hooksPath"])
@@ -235,7 +236,7 @@ fn install() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    let status = Command::new("git")
+    let status = crate::git::command()
         .args(["config", "--global", "core.hooksPath"])
         .arg(&dir)
         .status();
@@ -265,7 +266,7 @@ fn print_adapter_install_hints() {
 }
 
 fn uninstall() -> ExitCode {
-    let status = Command::new("git")
+    let status = crate::git::command()
         .args(["config", "--global", "--unset", "core.hooksPath"])
         .status();
 
@@ -780,7 +781,7 @@ mod tests {
     }
 
     fn init_git_repo(dir: &Path) {
-        let status = Command::new("git")
+        let status = crate::git::command()
             .arg("-C")
             .arg(dir)
             .args(["init", "-q"])
@@ -790,7 +791,7 @@ mod tests {
     }
 
     fn set_local_hooks_path(dir: &Path, value: &str) {
-        let status = Command::new("git")
+        let status = crate::git::command()
             .arg("-C")
             .arg(dir)
             .args(["config", "--local", "core.hooksPath", value])

@@ -1,7 +1,7 @@
 use log::debug;
 use serde_yaml::Value;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use super::{Adapter, AdapterLayer};
 
@@ -65,7 +65,7 @@ impl Adapter for GitLfsAdapter {
 /// `true` if `filter.lfs.clean` is set in the user's global git config
 /// (i.e. `git lfs install` has been run at least once with default scope).
 fn global_filter_lfs_clean_set() -> bool {
-    Command::new("git")
+    crate::git::command()
         .args(["config", "--global", "--get", "filter.lfs.clean"])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -108,7 +108,7 @@ fn gitattributes_uses_lfs(root: &Path) -> bool {
 
 /// `true` if the repo at `root` has any `lfs.*` entries in its local git config.
 fn repo_has_lfs_config(root: &Path) -> bool {
-    Command::new("git")
+    crate::git::command()
         .args(["-C"])
         .arg(root)
         .args(["config", "--local", "--get-regexp", "^lfs\\."])

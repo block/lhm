@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 const LHM_CONFIG_FILENAME: &str = "lhm.yaml";
 
@@ -66,7 +66,7 @@ pub fn save(config_dir: &Path, cfg: &LhmConfig) -> Result<(), String> {
 /// Return the URL of the `origin` remote for the repo at `root`. Returns
 /// `None` if git fails or no `origin` remote is configured.
 pub fn git_origin(root: &Path) -> Option<String> {
-    let output = Command::new("git")
+    let output = crate::git::command()
         .arg("-C")
         .arg(root)
         .args(["remote", "get-url", "origin"])
@@ -108,11 +108,10 @@ pub fn is_repo_disabled(config_dir: &Path, root: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::process::Command;
 
     fn init_repo_with_origin(dir: &Path, url: &str) {
         let run = |args: &[&str]| {
-            let status = Command::new("git")
+            let status = crate::git::command()
                 .arg("-C")
                 .arg(dir)
                 .args(args)
@@ -211,7 +210,7 @@ mod tests {
     #[test]
     fn test_git_origin_returns_none_when_no_remote() {
         let dir = tempfile::tempdir().unwrap();
-        let status = Command::new("git")
+        let status = crate::git::command()
             .arg("-C")
             .arg(dir.path())
             .args(["init", "-q"])
@@ -257,7 +256,7 @@ mod tests {
     fn test_is_repo_disabled_false_when_no_origin() {
         let cfg_dir = tempfile::tempdir().unwrap();
         let repo = tempfile::tempdir().unwrap();
-        let status = Command::new("git")
+        let status = crate::git::command()
             .arg("-C")
             .arg(repo.path())
             .args(["init", "-q"])

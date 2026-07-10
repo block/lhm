@@ -1,4 +1,4 @@
-use log::{debug, info};
+use log::debug;
 use serde_yaml::Value;
 use std::fs;
 use std::io::Write;
@@ -28,33 +28,6 @@ impl ConfigOverrides {
 }
 
 pub const LEFTHOOK_EXTENSIONS: &[&str] = &["yml", "yaml", "json", "jsonc", "toml"];
-
-pub const DEFAULT_USER_CONFIG: &str = r#"# User-level lefthook configuration
-# Lefthook's built-in LFS support runs `git lfs <hook>` on every repo (slow);
-# lhm's git-lfs adapter handles LFS only when the repo actually uses it.
-skip_lfs: true
-output:
-  - success
-  - failure
-pre-push:
-  parallel: true
-  commands:
-    test:
-      run: just test
-      skip:
-        - run: "! just --dry-run test"
-    lint:
-      run: just lint
-      skip:
-        - run: "! just --dry-run lint"
-pre-commit:
-  commands:
-    fmt:
-      stage_fixed: true
-      run: just fmt
-      skip:
-        - run: "! just --dry-run fmt"
-"#;
 
 /// Search for a lefthook config file in the given directory.
 /// Checks `lefthook.<ext>`, `.lefthook.<ext>`, and optionally `.config/lefthook.<ext>`.
@@ -96,21 +69,6 @@ pub fn repo_config(root: &Path, overrides: &ConfigOverrides) -> Option<PathBuf> 
         return Some(p.clone());
     }
     find_config(root, true)
-}
-
-/// Write a default `lefthook.yaml` in `dir` if no lefthook config exists there.
-pub fn install_default_user_config(dir: &Path) -> Result<(), String> {
-    if find_config(dir, false).is_some() {
-        debug!("user config already exists, skipping default");
-        return Ok(());
-    }
-    let path = dir.join("lefthook.yaml");
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("failed to create {}: {e}", parent.display()))?;
-    }
-    fs::write(&path, DEFAULT_USER_CONFIG).map_err(|e| format!("failed to write {}: {e}", path.display()))?;
-    info!("created default user config at {}", path.display());
-    Ok(())
 }
 
 /// Load the user-level config from `~/.config/lefthook.yaml` (or override) if it exists.
@@ -247,32 +205,6 @@ mod tests {
         fs::write(dir.path().join("lefthook.yaml"), "").unwrap();
         // yml comes first in LEFTHOOK_EXTENSIONS
         assert_eq!(find_config(dir.path(), false), Some(dir.path().join("lefthook.yml")));
-    }
-
-    #[test]
-    fn test_install_default_user_config_creates_when_missing() {
-        let dir = tempfile::tempdir().unwrap();
-        install_default_user_config(dir.path()).unwrap();
-
-        let created = dir.path().join("lefthook.yaml");
-        assert!(created.is_file());
-        let content = fs::read_to_string(&created).unwrap();
-        assert!(content.contains("pre-push:"));
-        assert!(content.contains("pre-commit:"));
-    }
-
-    #[test]
-    fn test_install_default_user_config_skips_when_exists() {
-        let dir = tempfile::tempdir().unwrap();
-        let existing = dir.path().join("lefthook.yml");
-        fs::write(&existing, "custom: true\n").unwrap();
-
-        install_default_user_config(dir.path()).unwrap();
-
-        // Original file untouched
-        assert_eq!(fs::read_to_string(&existing).unwrap(), "custom: true\n");
-        // No lefthook.yaml created
-        assert!(!dir.path().join("lefthook.yaml").exists());
     }
 
     #[test]

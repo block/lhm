@@ -16,7 +16,9 @@ run `git lfs install --skip-repo` once to configure LFS smudge/clean filters (no
 ///
 /// Detects repos that use git-lfs and injects lefthook commands that invoke
 /// `git lfs <hook> "$@"` for each LFS hook (`pre-push`, `post-checkout`,
-/// `post-commit`, `post-merge`).
+/// `post-commit`, `post-merge`). Lefthook's own built-in LFS support is
+/// suppressed separately by lhm's base config layer (`skip_lfs: true`), so
+/// these injected commands are the only LFS runner.
 ///
 /// This adapter is an `Underlay`: it merges below the user-global and repo
 /// layers so its commands run alongside whatever else the user has
@@ -159,6 +161,17 @@ mod tests {
         assert!(!gitattributes_uses_lfs(dir.path()));
     }
 
+    /// A temp dir whose root `.gitattributes` declares an LFS filter.
+    fn lfs_repo() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join(".gitattributes"),
+            "*.bin filter=lfs diff=lfs merge=lfs -text\n",
+        )
+        .unwrap();
+        dir
+    }
+
     #[test]
     fn test_generate_config_returns_none_for_non_lfs_hook() {
         let dir = tempfile::tempdir().unwrap();
@@ -198,6 +211,14 @@ mod tests {
         let config = GitLfsAdapter.generate_config(dir.path(), "post-merge").unwrap();
         let out = serde_yaml::to_string(&config).unwrap();
         assert!(out.contains("git lfs post-merge {0}"));
+    }
+
+    #[test]
+    fn test_detect_requires_repo_lfs_usage() {
+        let _stub = crate::adapters::test_support::StubBinary::create("git-lfs");
+        assert!(GitLfsAdapter.detect(lfs_repo().path()));
+        let non_lfs = tempfile::tempdir().unwrap();
+        assert!(!GitLfsAdapter.detect(non_lfs.path()));
     }
 
     #[test]

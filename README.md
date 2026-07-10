@@ -30,7 +30,6 @@ for repo configs), where `<ext>` is `yml`, `yaml`, `json`, `jsonc`, or `toml`.
 - Creates shell wrapper scripts for all standard git hooks in `~/.local/libexec/lhm/hooks/`, each invoking `lhm run-hook <hook>`
 - Marks each wrapper script as immutable (best-effort) so other tools that try to overwrite it fail loudly instead of silently replacing it. Uses `chflags(UF_IMMUTABLE)` on macOS/BSD and `chattr +i` semantics (`FS_IMMUTABLE_FL`) on Linux. macOS works for non-root user installs; Linux requires `CAP_LINUX_IMMUTABLE` (typically root), and without it lhm prints a warning that the scripts couldn't be marked immutable. Re-running `lhm install` clears and re-applies the flag.
 - Sets `git config --global core.hooksPath ~/.local/libexec/lhm/hooks`
-- Writes a default `~/.config/lefthook.yaml` if no user config exists
 
 ### `lhm uninstall`
 
@@ -120,6 +119,8 @@ Config is resolved as a layered merge, where later layers override earlier ones:
 
 Any layer may be absent. When a repo has no lefthook config, the repo-fallback adapter system is used in its place (see below).
 
+Beneath all of these, lhm merges a base setting of `skip_lfs: true`, suppressing lefthook's built-in LFS support — lhm runs LFS itself via the `git-lfs` underlay adapter (see below). Being the lowest-priority layer, any config can override it.
+
 When a repo or adapter config is present, the `no_tty` setting is automatically stripped from the system and user layers before merging. This prevents a machine- or user-wide config from disabling TTY for all repos — each repo should opt into `no_tty` explicitly. When there is no local layer, `no_tty` is kept so it still takes effect for system/user-only setups.
 
 ### Adapters
@@ -149,7 +150,7 @@ For the `husky` and `hooks-dir` adapters, git's hook arguments (e.g. `<remote-na
 |---------|---------|----------|
 | **git-lfs** | `git-lfs` in PATH **and** the repo uses LFS (root `.gitattributes` declares `filter=lfs`, or the repo's git config has any `lfs.*` entry) | Injects `git lfs <hook> "$@"` commands for `pre-push`, `post-checkout`, `post-commit`, and `post-merge`. Detection is per-repo: non-LFS repos pay no cost. The user or repo can override or skip these by defining a command named `git-lfs` in their own `lefthook.yaml`. |
 
-Lefthook has its own built-in LFS support that fires for those four hooks whenever `skip_lfs` isn't set, but it runs on every repo regardless of whether the repo actually uses LFS, which is noticeably slow. Our default global config sets `skip_lfs: true` to opt out, and the `git-lfs` underlay adapter then re-introduces the LFS commands only in repos that actually use LFS.
+Lefthook has its own built-in LFS support that fires for those four hooks whenever `skip_lfs` isn't set, regardless of whether the repo actually uses LFS, which is noticeably slow. lhm's base config layer sets `skip_lfs: true` to opt out everywhere, and the `git-lfs` underlay adapter re-introduces the LFS commands explicitly in repos that actually use LFS — so LFS runs exactly once, and only where it's needed. Setting `skip_lfs` in any system, user, or repo config overrides the base.
 
 If you have a repo-local hooks-dir or husky script (e.g. `.hooks/post-merge`, `.husky/pre-push`) that already shells out to `git lfs <hook>`, the underlay will run LFS a second time alongside your script. Either remove the `git lfs <hook>` line from your script (lhm now handles it) or override the underlay in your repo's `lefthook.yaml`:
 

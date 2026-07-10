@@ -13,8 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 
 use config::{
-    ConfigOverrides, find_config, install_default_user_config, load_system_configs, load_user_config, read_yaml,
-    repo_config, write_merged_temp,
+    ConfigOverrides, find_config, load_system_configs, load_user_config, read_yaml, repo_config, write_merged_temp,
 };
 use hooks::{GIT_HOOKS, annotate_hooks, create_hook_scripts, is_hook_name};
 use merge::merge_configs;
@@ -146,7 +145,7 @@ fn hooks_dir() -> PathBuf {
     home_dir().join(".local/libexec/lhm/hooks")
 }
 
-/// Directory where lhm seeds the default user-level lefthook config.
+/// Directory where the user-level lefthook config lives.
 fn config_dir() -> PathBuf {
     home_dir().join(".config")
 }
@@ -224,11 +223,6 @@ fn install() -> ExitCode {
     let binary = env::current_exe().expect("cannot determine lhm binary path");
     debug!("hooks dir: {}", dir.display());
     debug!("binary path: {}", binary.display());
-
-    if let Err(e) = install_default_user_config(&config_dir()) {
-        error!("{e}");
-        return ExitCode::FAILURE;
-    }
 
     if let Err(e) = create_hook_scripts(&dir, &binary) {
         error!("{e}");
@@ -443,6 +437,14 @@ fn config_for_adapter(adapter: &dyn adapters::Adapter, root: &Path, hook_name: O
     combined.map(annotate_hooks)
 }
 
+/// Base layer merged beneath everything else. lhm owns LFS hook execution
+/// (the git-lfs underlay injects explicit commands in repos that use LFS), so
+/// lefthook's built-in LFS support is suppressed unconditionally; any system,
+/// user, or repo config can still override `skip_lfs`.
+fn base_config() -> Value {
+    serde_yaml::from_str("skip_lfs: true\n").expect("static base config must parse")
+}
+
 /// Merge an ordered list of config layers (underlay, system, user,
 /// repo/adapter). Later layers override earlier ones using `merge_configs`.
 fn merge_layers(layers: Vec<Value>) -> Option<Value> {
@@ -470,11 +472,13 @@ fn above_repo_layer(value: &Value, has_local: bool) -> Value {
 
 /// Resolve the config layers into a single merged config.
 ///
-/// Merge order, lowest priority first: the synthetic `underlay` adapter, then
-/// each `system` layer in turn, then the `user` layer, then the local layer
-/// (repo config, else repo-fallback `adapter_config`). `no_tty` is stripped
-/// from the system and user layers whenever a local layer is present, so a
-/// broad config can't force `no_tty` on every repo.
+/// Merge order, lowest priority first: lhm's `base_config`, the synthetic
+/// `underlay` adapter, then each `system` layer in turn, then the `user`
+/// layer, then the local layer (repo config, else repo-fallback
+/// `adapter_config`). The base layer is only added when at least one real
+/// layer exists, so "no config at all" still resolves to `None`. `no_tty` is
+/// stripped from the system and user layers whenever a local layer is
+/// present, so a broad config can't force `no_tty` on every repo.
 fn resolve_config(
     underlay: &Option<Value>,
     system: &[Value],
@@ -504,7 +508,7 @@ fn resolve_config(
         layers.push(v);
     }
 
-    Ok(merge_layers(layers))
+    Ok(merge_layers(layers).map(|merged| merge_configs(base_config(), merged)))
 }
 
 /// Load the two repo-independent layers shared by `dry_run` and `run_hook`:
@@ -1122,6 +1126,30 @@ mod tests {
         let val = yaml("output:\n  - success\n");
         let stripped = strip_no_tty(val.clone());
         assert_eq!(to_yaml(&stripped), to_yaml(&val));
+    }
+
+    #[test]
+    fn test_resolve_config_merges_skip_lfs_base() {
+        let user = Some(yaml("pre-commit:\n  commands:\n    fmt:\n      run: just fmt\n"));
+        let result = resolve_config(&None, &[], &user, &None, &None).unwrap().unwrap();
+        let out = to_yaml(&result);
+        assert!(out.contains("skip_lfs: true"), "base skip_lfs applied: {out}");
+        assert!(out.contains("just fmt"), "user config kept: {out}");
+    }
+
+    #[test]
+    fn test_resolve_config_base_overridable_by_user() {
+        let user = Some(yaml(
+            "skip_lfs: false\npre-commit:\n  commands:\n    fmt:\n      run: just fmt\n",
+        ));
+        let result = resolve_config(&None, &[], &user, &None, &None).unwrap().unwrap();
+        let out = to_yaml(&result);
+        assert!(out.contains("skip_lfs: false"), "user overrides base: {out}");
+    }
+
+    #[test]
+    fn test_resolve_config_no_layers_stays_none() {
+        assert!(resolve_config(&None, &[], &None, &None, &None).unwrap().is_none());
     }
 
     #[test]

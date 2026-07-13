@@ -49,7 +49,7 @@ jobs:
           mv "target/${TARGET}"/release/lhm "${TARGET_PATH}"
           bzip2 -f9 "${TARGET_PATH}"
           echo "TARGET_PATH=${TARGET_PATH}.bz2" >> "$GITHUB_OUTPUT"
-      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # ratchet:actions/attest-build-provenance@v2
+      - uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4
         with:
           subject-path: ${{ steps.build.outputs.TARGET_PATH }}
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

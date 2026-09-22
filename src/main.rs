@@ -1,5 +1,6 @@
 mod adapters;
 mod config;
+mod git;
 mod hooks;
 mod immutable;
 mod lhm_config;
@@ -189,9 +190,7 @@ fn repo_root() -> Option<PathBuf> {
 /// A local override silently bypasses lhm's global `core.hooksPath`, so this
 /// is used to warn the user when lhm isn't actually being invoked.
 fn local_hooks_path(root: &Path) -> Option<String> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(root)
+    let output = git::command_in(root)
         .args(["config", "--local", "--get", "core.hooksPath"])
         .stderr(Stdio::null())
         .output()
@@ -206,9 +205,7 @@ fn local_hooks_path(root: &Path) -> Option<String> {
 /// Unset the repo-local `core.hooksPath`. Idempotent: succeeds if the key is
 /// already absent (git exits 5 in that case).
 fn unset_local_hooks_path(root: &Path) -> Result<(), String> {
-    let status = Command::new("git")
-        .arg("-C")
-        .arg(root)
+    let status = git::command_in(root)
         .args(["config", "--local", "--unset", "core.hooksPath"])
         .status()
         .map_err(|e| format!("failed to run git: {e}"))?;
@@ -792,19 +789,12 @@ mod tests {
     }
 
     fn init_git_repo(dir: &Path) {
-        let status = Command::new("git")
-            .arg("-C")
-            .arg(dir)
-            .args(["init", "-q"])
-            .status()
-            .expect("git init");
+        let status = git::command_in(dir).args(["init", "-q"]).status().expect("git init");
         assert!(status.success());
     }
 
     fn set_local_hooks_path(dir: &Path, value: &str) {
-        let status = Command::new("git")
-            .arg("-C")
-            .arg(dir)
+        let status = git::command_in(dir)
             .args(["config", "--local", "core.hooksPath", value])
             .status()
             .expect("git config");

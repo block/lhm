@@ -6,6 +6,24 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::{Command, Output};
 
+const GIT_LOCAL_ENV_VARS: &[&str] = &[
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_CONFIG",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG_COUNT",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_GRAFT_FILE",
+    "GIT_INDEX_FILE",
+    "GIT_NO_REPLACE_OBJECTS",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_PREFIX",
+    "GIT_SHALLOW_FILE",
+    "GIT_COMMON_DIR",
+];
+
 fn write_executable(path: &Path, content: &str) {
     fs::write(path, content).unwrap();
     let mut permissions = fs::metadata(path).unwrap().permissions();
@@ -14,7 +32,12 @@ fn write_executable(path: &Path, content: &str) {
 }
 
 fn run_git(repo: &Path, args: &[&str]) {
-    let status = Command::new("git").arg("-C").arg(repo).args(args).status().unwrap();
+    let mut command = Command::new("git");
+    command.arg("-C").arg(repo).args(args);
+    for variable in GIT_LOCAL_ENV_VARS {
+        command.env_remove(variable);
+    }
+    let status = command.status().unwrap();
     assert!(status.success(), "git command failed: {args:?}");
 }
 

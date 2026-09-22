@@ -18,9 +18,9 @@ pub enum AdapterLayer {
     /// `RepoFallback` adapter is used; never applied when the repo has its
     /// own lefthook config.
     RepoFallback,
-    /// Always-on baseline that sits below the user-global layer. Every
-    /// detected `Underlay` adapter contributes, and user/repo configs can
-    /// override anything it generates.
+    /// Baseline integration that sits below the user-global layer. Every
+    /// detected `Underlay` adapter contributes unless the repo is disabled,
+    /// and user/repo configs can override anything it generates.
     Underlay,
 }
 
@@ -28,7 +28,7 @@ pub enum AdapterLayer {
 ///
 /// `RepoFallback` adapters (pre-commit, husky, hooks-dir) detect a repo-level
 /// hook manager and stand in when there's no native lefthook config.
-/// `Underlay` adapters (git-lfs) detect tools that always need to run
+/// `Underlay` adapters (git-lfs) detect integrations that normally run
 /// regardless of the repo's own hook manager.
 pub trait Adapter {
     /// Human-readable name of this adapter (e.g. "pre-commit", "git-lfs").

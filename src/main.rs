@@ -547,10 +547,14 @@ fn dry_run(overrides: &ConfigOverrides) -> ExitCode {
     } else {
         None
     };
-    let underlay = root.as_deref().and_then(|r| underlay_config_for(r, None));
+    let underlay = if disabled {
+        None
+    } else {
+        root.as_deref().and_then(|r| underlay_config_for(r, None))
+    };
 
     if disabled {
-        debug!("repo-specific hooks disabled; using system + user + underlay only");
+        debug!("repo-specific hooks and integrations disabled; using system + user only");
     }
     if let Some(ref p) = repo {
         debug!("repo config: {}", p.display());
@@ -641,7 +645,7 @@ fn run_hook(hook_name: &str, args: Vec<String>, overrides: &ConfigOverrides) -> 
     debug!("repo root: {:?}", root);
     debug!("repo config: {:?}", repo);
     if disabled {
-        debug!("repo-specific hooks disabled; using system + user + underlay only");
+        debug!("repo-specific hooks and integrations disabled; using system + user only");
     }
 
     let adapter_config = if !disabled && repo.is_none() {
@@ -649,7 +653,11 @@ fn run_hook(hook_name: &str, args: Vec<String>, overrides: &ConfigOverrides) -> 
     } else {
         None
     };
-    let underlay = root.as_deref().and_then(|r| underlay_config_for(r, Some(hook_name)));
+    let underlay = if disabled {
+        None
+    } else {
+        root.as_deref().and_then(|r| underlay_config_for(r, Some(hook_name)))
+    };
 
     let merged = match resolve_config(&underlay, &system, &user, &repo, &adapter_config) {
         Ok(Some(m)) => m,

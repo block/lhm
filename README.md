@@ -37,7 +37,7 @@ Unsets `git config --global core.hooksPath`, uninstalling lhm. The hook scripts 
 
 ### `lhm disable` / `lhm enable`
 
-`lhm disable` suppresses **repo-specific** hooks (the repo's own `lefthook.yaml` and any repo-fallback adapter like pre-commit/husky/hooks-dir) for the current repo. The system and user configs and underlay adapters (e.g. `git-lfs`) still run. `lhm enable` reverses it.
+`lhm disable` suppresses **repo-specific** hooks (the repo's own `lefthook.yaml` and any repo-fallback adapter like pre-commit/husky/hooks-dir) for the current repo. It also suppresses repo integrations such as the `git-lfs` underlay. System and user configs still run. `lhm enable` reverses both changes.
 
 The disabled set is keyed by the repo's `origin` remote URL and persisted in `~/.config/lhm.yaml`:
 
@@ -112,7 +112,7 @@ When git triggers a hook, it runs the wrapper script in the hooks directory. Eac
 
 Config is resolved as a layered merge, where later layers override earlier ones:
 
-1. **Underlay adapters** — always-on baselines for tools that need their hooks to run regardless of the repo's own configuration (e.g. `git-lfs`). See *Adapters* below.
+1. **Underlay adapters** — baselines for tools that need their hooks to run regardless of the repo's own configuration (e.g. `git-lfs`). They are omitted for repos disabled with `lhm disable`. See *Adapters* below.
 2. **System** (`/etc/lefthook.<ext>`, then `/usr/local/etc/lefthook.<ext>`) — machine-wide defaults. The directories searched are configurable; see [Config overrides](#config-overrides).
 3. **User** (`~/.config/lefthook.yaml`) — per-user defaults
 4. **Repo** (`$REPO/lefthook.yaml` or repo-fallback adapter) — per-repo overrides
@@ -128,7 +128,7 @@ When a repo or adapter config is present, the `no_tty` setting is automatically 
 lhm has two categories of adapters:
 
 - **Repo-fallback adapters** stand in for a missing `lefthook.yaml`. Only the first detected one is used.
-- **Underlay adapters** detect always-on tools and merge into the lowest-priority layer, beneath the system, user, and repo configs, so any of them can still override anything they generate.
+- **Underlay adapters** detect integrations and merge into the lowest-priority layer, beneath the system, user, and repo configs, so any of them can still override anything they generate. They do not run in repos disabled with `lhm disable`.
 
 #### Repo-fallback adapters
 
@@ -148,7 +148,7 @@ For the `husky` and `hooks-dir` adapters, git's hook arguments (e.g. `<remote-na
 
 | Adapter | Detects | Behavior |
 |---------|---------|----------|
-| **git-lfs** | `git-lfs` in PATH **and** the repo uses LFS (root `.gitattributes` declares `filter=lfs`, or the repo's git config has any `lfs.*` entry) | Injects `git lfs <hook> "$@"` commands for `pre-push`, `post-checkout`, `post-commit`, and `post-merge`. Detection is per-repo: non-LFS repos pay no cost. The user or repo can override or skip these by defining a command named `git-lfs` in their own `lefthook.yaml`. |
+| **git-lfs** | `git-lfs` in PATH **and** the repo uses LFS (root `.gitattributes` declares `filter=lfs`, or the repo's git config has any `lfs.*` entry) | Injects `git lfs <hook> "$@"` commands for `pre-push`, `post-checkout`, `post-commit`, and `post-merge`. Detection is per-repo: non-LFS repos pay no cost. `lhm disable` suppresses the integration. The user or repo can override or skip it by defining a command named `git-lfs` in their own `lefthook.yaml`. |
 
 Lefthook has its own built-in LFS support that fires for those four hooks whenever `skip_lfs` isn't set, regardless of whether the repo actually uses LFS, which is noticeably slow. lhm's base config layer sets `skip_lfs: true` to opt out everywhere, and the `git-lfs` underlay adapter re-introduces the LFS commands explicitly in repos that actually use LFS — so LFS runs exactly once, and only where it's needed. Setting `skip_lfs` in any system, user, or repo config overrides the base.
 

@@ -110,9 +110,7 @@ fn gitattributes_uses_lfs(root: &Path) -> bool {
 
 /// `true` if the repo at `root` has any `lfs.*` entries in its local git config.
 fn repo_has_lfs_config(root: &Path) -> bool {
-    Command::new("git")
-        .args(["-C"])
-        .arg(root)
+    crate::git::command_in(root)
         .args(["config", "--local", "--get-regexp", "^lfs\\."])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
